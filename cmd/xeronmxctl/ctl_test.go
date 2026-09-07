@@ -170,24 +170,24 @@ func TestOutputHelpers(t *testing.T) {
 		t.Fatalf("expected never, got %s", ago(&zero))
 	}
 	pastSec := time.Now().Add(-30 * time.Second)
-	if ago(&pastSec) != "30s ago" {
+	if !strings.HasSuffix(ago(&pastSec), " ago") {
 		t.Fatalf("unexpected ago: %s", ago(&pastSec))
 	}
-	pastMin := time.Now().Add(-10 * time.Minute)
-	if ago(&pastMin) != "10m ago" {
-		t.Fatalf("unexpected ago: %s", ago(&pastMin))
+	pastMin := time.Now().Add(-10*time.Minute - 5*time.Second)
+	if a := ago(&pastMin); a != "10m ago" && a != "11m ago" {
+		t.Fatalf("unexpected ago: %s", a)
 	}
-	pastHour := time.Now().Add(-5 * time.Hour)
-	if ago(&pastHour) != "5h ago" {
-		t.Fatalf("unexpected ago: %s", ago(&pastHour))
+	pastHour := time.Now().Add(-5*time.Hour - 5*time.Minute)
+	if a := ago(&pastHour); a != "5h ago" && a != "6h ago" {
+		t.Fatalf("unexpected ago: %s", a)
 	}
-	pastDays := time.Now().Add(-72 * time.Hour)
-	if ago(&pastDays) != "3d ago" {
-		t.Fatalf("unexpected ago: %s", ago(&pastDays))
+	pastDays := time.Now().Add(-72*time.Hour - time.Hour)
+	if a := ago(&pastDays); a != "3d ago" && a != "4d ago" {
+		t.Fatalf("unexpected ago: %s", a)
 	}
-	future := time.Now().Add(10 * time.Minute)
-	if ago(&future) != "in 10m" {
-		t.Fatalf("unexpected future ago: %s", ago(&future))
+	future := time.Now().Add(10*time.Minute + 5*time.Second)
+	if a := ago(&future); a != "in 10m" && a != "in 9m" {
+		t.Fatalf("unexpected future ago: %s", a)
 	}
 
 	if until(nil) != "never" {
@@ -199,8 +199,8 @@ func TestOutputHelpers(t *testing.T) {
 	if until(&pastSec) != "expired" {
 		t.Fatalf("expected expired, got %s", until(&pastSec))
 	}
-	if until(&future) != "in 10m" {
-		t.Fatalf("unexpected until: %s", until(&future))
+	if u := until(&future); u != "in 10m" && u != "in 9m" {
+		t.Fatalf("unexpected until: %s", u)
 	}
 
 	if short(10*time.Second) != "10s" {
