@@ -1,0 +1,7 @@
+# Normalise line endings so a Windows and a Linux checkout produce identical
+# blobs. Without this, gofmt in CI fails on files committed from Windows.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

@@ -1,0 +1,184 @@
+{{- $fullName := include "xeronmx.fullname" . -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "xeronmx.labels" . | nindent 4 }}
+spec:
+  # A StatefulSet, not a Deployment, and not because of ordering.
+  #
+  # Every replica needs its own spool: a SQLite database beside a directory of
+  # encrypted message bodies. Two pods on one ReadWriteOnce volume is data
+  # corruption, and a Deployment with volumeClaimTemplates does not exist. The
+  # stable pod names are a second benefit — they are what lets the cluster peer
+  # list be generated rather than configured.
+  serviceName: {{ include "xeronmx.headlessName" . }}
+  replicas: {{ .Values.replicaCount }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "xeronmx.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll the pods when the rendered configuration changes. Without this a
+        # `helm upgrade` that only edits values leaves every pod running the
+        # previous config until something else happens to restart it.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "xeronmx.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "xeronmx.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: xeronmx
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["-config", "/etc/xeronmx/xeronmx.yaml"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: smtp
+              containerPort: {{ .Values.smtp.containerPort }}
+              protocol: TCP
+            - name: http
+              containerPort: {{ .Values.ui.containerPort }}
+              protocol: TCP
+            {{- if .Values.submission.enabled }}
+            - name: submission
+              containerPort: {{ .Values.submission.containerPort }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- if .Values.cluster.enabled }}
+            # The pod name is stable across rescheduling, which is exactly what
+            # a node id has to be.
+            - name: XERONMX_CLUSTER_NODE_ID
+              value: "$(POD_NAME)"
+            - name: XERONMX_CLUSTER_ADVERTISE_URL
+              value: "http://$(POD_NAME).{{ include "xeronmx.headlessName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ui.containerPort }}"
+            - name: XERONMX_CLUSTER_PEERS
+              value: {{ include "xeronmx.peerList" . | quote }}
+            # Naming the primary rather than assigning a role is what lets one
+            # ConfigMap serve every replica: each pod compares its own id to
+            # this and works out what it is.
+            - name: XERONMX_CLUSTER_PRIMARY_NODE_ID
+              value: "{{ $fullName }}-0"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            {{- if or .Values.existingSecret (eq (include "xeronmx.createSecret" .) "true") }}
+            - secretRef:
+                name: {{ include "xeronmx.secretName" . }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/xeronmx
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/xeronmx
+            {{- if .Values.smtp.tlsSecretName }}
+            - name: smtp-tls
+              mountPath: /etc/xeronmx/tls
+              readOnly: true
+            {{- end }}
+          # /healthz answers without touching the database, so a slow query
+          # cannot get a healthy pod killed. Readiness and liveness both use it;
+          # what differs is the consequence.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullName }}
+        {{- if .Values.smtp.tlsSecretName }}
+        - name: smtp-tls
+          secret:
+            secretName: {{ .Values.smtp.tlsSecretName }}
+        {{- end }}
+        {{- if not .Values.persistence.enabled }}
+        # Explicitly opted out of persistence. Everything queued dies with the
+        # pod, which defeats the point of a backup MX; only useful for a demo.
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

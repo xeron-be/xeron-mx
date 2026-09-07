@@ -1,0 +1,34 @@
+{{- if .Values.ui.ingress.enabled }}
+{{- $fullName := include "xeronmx.fullname" . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "xeronmx.labels" . | nindent 4 }}
+  {{- with .Values.ui.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ui.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ui.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ required "ui.ingress.host is required when the ingress is enabled" .Values.ui.ingress.host | quote }}
+      secretName: {{ .Values.ui.ingress.tls.secretName | default (printf "%s-tls" $fullName) }}
+  {{- end }}
+  rules:
+    - host: {{ required "ui.ingress.host is required when the ingress is enabled" .Values.ui.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ui.ingress.path }}
+            pathType: {{ .Values.ui.ingress.pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  name: http
+{{- end }}

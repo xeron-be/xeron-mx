@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "xeronmx.headlessName" . }}
+  labels:
+    {{- include "xeronmx.labels" . | nindent 4 }}
+spec:
+  # Headless, so every pod gets its own DNS name. That is what the generated
+  # cluster peer list resolves against, and it is why peers do not have to be
+  # listed by hand.
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "xeronmx.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.ui.containerPort }}
+      targetPort: http

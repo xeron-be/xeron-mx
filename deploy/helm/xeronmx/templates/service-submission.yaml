@@ -1,0 +1,27 @@
+{{- if .Values.submission.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "xeronmx.fullname" . }}-submission
+  labels:
+    {{- include "xeronmx.labels" . | nindent 4 }}
+  {{- with .Values.submission.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.submission.service.type }}
+  {{- if and (eq .Values.submission.service.type "LoadBalancer") .Values.submission.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.submission.service.loadBalancerIP }}
+  {{- end }}
+  {{- if ne .Values.submission.service.type "ClusterIP" }}
+  externalTrafficPolicy: {{ .Values.submission.service.externalTrafficPolicy }}
+  {{- end }}
+  selector:
+    {{- include "xeronmx.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: submission
+      port: {{ .Values.submission.service.port }}
+      targetPort: submission
+      protocol: TCP
+{{- end }}

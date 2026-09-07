@@ -1,0 +1,28 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "xeronmx.fullname" . }}
+  labels:
+    {{- include "xeronmx.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "xeronmx.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
+      {{- if or .Values.metrics.token .Values.existingSecret }}
+      # The exporter takes the same token as a bearer credential, so Prometheus
+      # reads it out of the same Secret the pods do.
+      authorization:
+        credentials:
+          name: {{ include "xeronmx.secretName" . }}
+          key: XERONMX_METRICS_TOKEN
+      {{- end }}
+{{- end }}

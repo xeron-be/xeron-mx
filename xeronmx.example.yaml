@@ -1,0 +1,402 @@
+# XeronMX configuration.
+#
+# Every value below is a default: an empty file boots correctly. Copy this to
+# xeronmx.yaml and change only what you need.
+#
+# Anything here can also come from the environment, which is usually easier in a
+# container: data_dir becomes XERONMX_DATA_DIR, smtp.hostname becomes
+# XERONMX_SMTP_HOSTNAME, and so on.
+#
+# Domains are NOT configured here. They live in the database because you add and
+# edit them from the web UI while the daemon is running.
+
+data_dir: /var/lib/xeronmx
+
+smtp:
+  addr: ":25"
+
+  # Announced in the SMTP banner and EHLO. Set this to the name your secondary
+  # MX record points at — a mismatch makes strict senders suspicious.
+  hostname: ""
+
+  max_message_bytes: 52428800   # 50 MiB, refused with 552 above this
+  max_recipients: 100
+
+  # Concurrent inbound sessions. Anything over the limit is answered 421 and
+  # closed, which tells the sending server to retry — the sessions past the
+  # ceiling are refused, never queued in memory. 0 removes the limit, which is
+  # only sensible on a network nobody else can reach.
+  # Environment: XERONMX_SMTP_MAX_CONNECTIONS
+  max_connections: 200
+
+  read_timeout: 5m
+  write_timeout: 5m
+
+  # STARTTLS on the inbound listener. Optional but recommended.
+  # Both must be set together.
+  tls_cert: ""
+  tls_key: ""
+
+http:
+  addr: ":8080"
+  base_url: ""                  # used to build links in notifications
+  session_ttl: 168h
+
+  # Static certificate files. Leave empty to serve plain HTTP, or use the acme
+  # block below to get certificates automatically.
+  tls_cert: ""
+  tls_key: ""
+
+  # Automatic certificates from Let's Encrypt. Takes precedence over tls_cert.
+  #
+  # Requirements, all of them:
+  #   - the names in `domains` resolve to this machine
+  #   - port 80 is free and reachable from the internet for the HTTP-01
+  #     challenge; the CA connects there by name and that is not configurable
+  #   - data_dir persists, so issued certificates survive a restart. Without
+  #     that, every restart requests new ones and the CA rate limits (5
+  #     duplicates per week) lock you out of TLS for days
+  #
+  # The certificate obtained here is reused for STARTTLS on the SMTP listener,
+  # so put the secondary MX hostname first in the list.
+  acme:
+    enabled: false
+    domains: []                 # e.g. ["mx2.you.com"]
+    email: ""                   # receives expiry warnings from the CA
+    terms_agreed: false         # must be true: accepts the CA subscriber agreement
+    cache_dir: ""               # defaults to <data_dir>/acme
+    # Where the HTTP-01 challenge listener binds.
+    #
+    # Two different ports, and only one of them is fixed. The CA always connects
+    # to port 80 of the public name — that is in the protocol and cannot be
+    # changed. This setting is only what the process binds locally, so anything
+    # that maps public 80 onto it works: a NAT rule, a reverse proxy, a
+    # Kubernetes Service. Running unprivileged with `challenge_addr: ":8888"`
+    # and forwarding 80 to 8888 is a perfectly ordinary arrangement.
+    #
+    # Under Docker, publish it (`- "80:80"`) or the listener starts, logs that
+    # it is running, and never hears from the CA.
+    challenge_addr: ":80"
+    directory_url: ""           # set to the LE staging URL while testing
+
+    # How long before expiry a certificate is replaced.
+    #
+    # This MUST be shorter than the lifetime of the certificates your CA issues.
+    # The client renews as soon as less than this is left, with no floor of its
+    # own, so a window longer than the certificate means renewing without pause
+    # — measured at about twelve issuances a second against a CA handing out
+    # ten-minute certificates, which a real CA answers by blocking the account.
+    #
+    # 30 days suits Let's Encrypt's 90-day certificates. Anything short-lived
+    # needs a shorter window: step-ca issues day-long certificates by default,
+    # and Let's Encrypt's short-lived profile is six days.
+    # Environment: XERONMX_ACME_RENEW_BEFORE
+    renew_before: 720h          # 30 days
+
+queue:
+  # Ceilings. Past either, the listener answers 452 so senders hold the mail and
+  # retry, rather than it being lost.
+  max_messages: 100000
+  max_bytes: 21474836480        # 20 GiB
+
+  # Minimum free disk space on the spool storage volume before intake rejects
+  # new mail with 452 4.3.1 (Insufficient system storage) at MAIL FROM.
+  # Protects against disk saturation and database corruption. Set to 0 to disable.
+  # Environment: XERONMX_QUEUE_MIN_FREE_DISK_BYTES
+  min_free_disk_bytes: 1073741824 # 1 GiB
+
+  # How long a message may wait before it is given up on. RFC 5321 recommends
+  # at least 4-5 days.
+  retention: 168h               # 7 days
+
+  workers: 4
+
+  # Exponential backoff between delivery attempts, with jitter so a recovered
+  # primary is not hit by the whole queue in the same second.
+  retry_base: 1m
+  retry_max: 2h
+  delivery_timeout: 5m
+
+health:
+  # How the primary is probed. This is a real SMTP handshake, not a TCP connect:
+  # a host can accept connections on port 25 with its mail server stopped.
+  interval: 30s
+  timeout: 10s
+
+  # Consecutive probes needed to change the verdict. More than one keeps a single
+  # dropped packet from declaring an outage.
+  failure_threshold: 3
+  success_threshold: 2
+
+metrics:
+  # Prometheus exposition at GET /metrics.
+  enabled: true
+
+  # When set, /metrics requires `Authorization: Bearer <token>`. Leaving it
+  # empty is normal for a target on a private network, but the metrics carry
+  # domain names and queue depths, so set one if the port faces the internet.
+  token: ""
+
+# Spam filtering through an rspamd sidecar.
+#
+# Filtering is best-effort by design: if rspamd is unreachable, slow, or returns
+# nonsense, the message is accepted anyway. Losing mail because a spam filter was
+# down would be exactly the failure this project exists to prevent.
+#
+# Note what this is *not* for. Your primary runs its own filtering with your own
+# training data when the message finally reaches it. Filtering here keeps an
+# outage from filling the spool with junk, and passes a verdict along in the
+# X-Spam-* headers.
+spam:
+  enabled: false
+  url: ""                       # e.g. http://rspamd:11333
+  password: ""                  # rspamd controller password, if set
+  timeout: 10s
+  max_size_bytes: 10485760      # 10 MiB; larger mail skips the scan
+
+  # Allow a 550 on rspamd's verdict. Off by default: bouncing somebody's mail on
+  # a sidecar's opinion is a decision to make deliberately. With this off, a
+  # reject verdict still tags the message.
+  reject_enabled: false
+
+  # Allow greylist and soft-reject verdicts to answer 451. Real mail servers
+  # retry and get through; most spam engines do not bother.
+  defer_enabled: true
+
+# Outbound submission on port 587, for when your mail server can receive but
+# cannot send.
+#
+# Point the primary's smarthost here and its outbound mail queues in XeronMX
+# instead of bouncing. Every rule inverts compared to inbound: authentication is
+# mandatory, TLS comes before credentials, and the sender must be a configured
+# domain.
+outbound:
+  enabled: false
+  addr: ":587"
+
+  # "relay" hands everything to a smarthost, whose IP reputation carries the
+  # mail. That is usually the point: someone reaching for this is often doing so
+  # *because* their own address has no reputation left.
+  #
+  # "direct" looks up the recipient's MX and delivers itself. No third party, but
+  # delivery then rests on this machine's IP.
+  mode: relay
+
+  relay_host: ""                # e.g. smtp.your-provider.example
+  relay_port: 587
+  relay_tls: starttls
+  relay_username: ""
+  relay_password: ""
+
+  max_message_bytes: 52428800
+
+  # Concurrent submission sessions, refused with 421 above the limit. Lower
+  # than the inbound ceiling because only your own mail server speaks here.
+  # Environment: XERONMX_OUTBOUND_MAX_CONNECTIONS
+  max_connections: 100
+
+  # Refuse AUTH on a connection that has not upgraded to TLS. Turning this off
+  # sends submission passwords across the wire in the clear.
+  #
+  # With this on and no certificate configured, XeronMX refuses to start rather
+  # than run a listener nobody can ever authenticate to.
+  # Environment: XERONMX_OUTBOUND_REQUIRE_TLS
+  require_tls: true
+
+# Automatic backups.
+#
+# Copying a live SQLite file with cp or a volume snapshotter can yield a corrupt
+# copy: the write-ahead log may be mid-transaction. This writes a consistent
+# snapshot instead, with SQLite's own VACUUM INTO, so an ordinary file-level
+# backup of the data directory captures something restorable.
+#
+# WHAT IT COVERS: the database — domains, the queue's metadata, accounts, the
+# timeline. NOT the message bodies, and NOT master.key. Those are immutable
+# files that a volume backup already captures correctly; the database was the
+# only part that needed coordinating. A restore needs all three.
+backup:
+  enabled: false
+  dir: ""                       # defaults to <data_dir>/backups
+  interval: 24h
+  keep: 7                       # snapshots retained; 0 keeps every one
+
+# Alerts. Out-of-band notice when mail is at risk, because a dashboard nobody is
+# looking at is not an alert.
+#
+# Three things are worth waking someone for, and nothing else is: a primary that
+# has stayed down, a spool that has filled and is refusing mail, and a message
+# given up on before it was delivered. Routine traffic never raises anything.
+alerts:
+  enabled: false
+
+  # How long a primary must stay down before anyone is told. A reboot trips a
+  # zero here, and an alert that cries wolf is an alert that gets muted.
+  # Environment: XERONMX_ALERTS_PRIMARY_DOWN_AFTER
+  primary_down_after: 5m
+
+  # The same alert is not repeated inside this window.
+  min_interval: 30m
+
+  webhook:
+    # POSTs the alert as JSON. Slack, Discord, ntfy, or your own endpoint.
+    # Environment: XERONMX_ALERTS_WEBHOOK_URL
+    url: ""
+    # Signs the body with HMAC-SHA256 in the X-XeronMX-Signature header, so the
+    # receiver can tell a real alert from anyone who found the URL.
+    secret: ""
+    timeout: 10s
+
+  email:
+    # IMPORTANT: this relay must NOT be the mail server this instance watches.
+    # An alert saying "your mail is broken", sent through the mail path being
+    # reported on, is an alert you will not receive. Use a provider, or the
+    # smarthost from the outbound block.
+    to: []                      # e.g. ["ops@you.com"]
+    from: ""                    # e.g. "xeronmx@you.com"
+    host: ""                    # e.g. "smtp.your-provider.example"
+    port: 587
+    username: ""
+    password: ""
+    tls: starttls               # none | opportunistic | starttls | tls
+
+# ---------------------------------------------------------------------------
+# Event webhooks
+#
+# Not the alert webhook above. That one carries the three things worth waking
+# somebody for, to a single URL. This is the whole timeline — mail received,
+# delivered, deferred, quarantined, and every admin action — POSTed to as many
+# endpoints as you like, with retries and a delivery log.
+#
+# The subscriptions themselves are NOT here. They are managed in the panel under
+# Settings, because they belong to the operator and change more often than a
+# deployment does. What lives here is how they get delivered.
+# ---------------------------------------------------------------------------
+webhooks:
+  enabled: true                 # Environment: XERONMX_WEBHOOKS_ENABLED
+
+  # How many endpoints are posted to at once within one batch.
+  workers: 2
+
+  timeout: 10s
+
+  # Attempts before a delivery is given up on. A 4xx that is not 408 or 429 is
+  # not retried at all: a 404 answers the same way the eighth time.
+  max_attempts: 8
+
+  # Backoff between attempts: base, then doubling, capped at retry_max, with a
+  # little jitter so a fleet that lost the same endpoint does not return to it
+  # in lockstep.
+  retry_base: 30s
+  retry_max: 1h
+
+  # How long resolved deliveries are kept for the log in the panel. Pending
+  # deliveries are never purged: they are still owed to somebody.
+  retention: 168h
+
+# ---------------------------------------------------------------------------
+# Single sign-on for the admin panel (OIDC)
+#
+# Works with Entra ID, Okta, Google Workspace, Keycloak, Authentik — anything
+# that publishes a discovery document.
+# ---------------------------------------------------------------------------
+oidc:
+  enabled: false                # Environment: XERONMX_OIDC_ENABLED
+
+  # Must be https. An http:// issuer would send the identity assertion in clear,
+  # so it is refused rather than warned about.
+  issuer: ""                    # e.g. "https://id.you.com"
+  client_id: ""
+  client_secret: ""             # Environment: XERONMX_OIDC_CLIENT_SECRET
+
+  # Where the provider sends the browser back. Register this string exactly as
+  # the redirect URI; a trailing slash is enough to break sign-in. Left empty it
+  # is derived from http.base_url.
+  redirect_url: ""
+
+  scopes: ["openid", "email", "profile"]
+
+  # What happens when somebody the provider vouches for has no account here.
+  # Off means the provider can authenticate people, but not create operators.
+  auto_provision: false
+  default_role: viewer          # admin | viewer
+  allowed_domains: []           # e.g. ["you.com"]; empty means any domain
+
+  # Keep the local password form working alongside the provider.
+  #
+  # Turning this off makes the provider the only way in — including on the day
+  # the provider is down. Keep the account the setup wizard created as the way
+  # back in, and turn this off only once you have another.
+  allow_password_login: true
+
+  # For Microsoft Entra ID (Azure AD), which does not emit an email_verified
+  # claim for organizational work accounts.
+  skip_email_verified: false
+
+  # For Google Workspace, restricts login to users from this hosted domain.
+  hosted_domain: ""             # e.g. "you.com"
+
+
+# ---------------------------------------------------------------------------
+# Clustering
+#
+# This does NOT replicate the queue, and no setting here will. Each node holds
+# its own database and its own encrypted spool; mail queued on a node that goes
+# down stays there until it comes back. That is what a backup MX behind two
+# equal-priority MX records already is, and nothing is lost, because a sender
+# that cannot reach one node simply used the other.
+#
+# What this adds is the two things that arrangement genuinely lacks: seeing the
+# whole fleet in one place, and knowing the nodes are configured the same way. A
+# domain on one node and not the other is a backup MX that answers 550 to
+# whichever senders happen to land on it.
+#
+# The same file goes on every node. Only node_id and advertise_url differ.
+# ---------------------------------------------------------------------------
+cluster:
+  enabled: false                # Environment: XERONMX_CLUSTER_ENABLED
+
+  # Must be stable across restarts. Defaults to the hostname, which is right
+  # everywhere the node has a name of its own, and wrong under a Deployment with
+  # generated pod names — which is why the Helm chart sets it explicitly.
+  node_id: ""
+
+  # Naming the primary rather than assigning a role per node is what lets one
+  # configuration serve the whole fleet: each node compares its own id to this.
+  # It also removes the split-brain where two nodes both believe they are
+  # primary. Falls back to `role` below when left empty.
+  primary_node_id: ""
+  role: follower                # primary | follower
+
+  # Where peers reach this node's API.
+  advertise_url: ""             # e.g. "https://mx2.you.com"
+
+  # Every node in the fleet, this one included — its own address is ignored, so
+  # the list can be identical everywhere.
+  peers: []
+
+  # At least 16 characters, the same on every node. Required: the cluster
+  # endpoints hand out the configuration document, so there is no open mode.
+  # Environment: XERONMX_CLUSTER_SECRET
+  secret: ""
+
+  interval: 30s
+  timeout: 10s
+
+  # Let a follower pull domains and submission accounts from the primary when
+  # their fingerprints disagree. Off by default, because it makes one node able
+  # to write to another's database. It creates and updates, and never deletes.
+  #
+  # Submission passwords cannot replicate: only their Argon2id hash is stored,
+  # so there is nothing to copy. A follower will report drift it cannot resolve.
+  sync_config: false
+
+log:
+  level: info                   # debug | info | warn | error
+  format: json                  # json | text
+
+maintenance:
+  # Start the node in drain mode (rejects inbound SMTP with 421 4.3.2,
+  # continues draining existing spool). Can also be toggled via `xeronmxctl drain`
+  # or POST /api/v1/maintenance/drain.
+  # Environment: XERONMX_MAINTENANCE_DRAIN
+  drain: false
