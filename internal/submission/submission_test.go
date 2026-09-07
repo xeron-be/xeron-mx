@@ -118,7 +118,7 @@ func TestSubmissionRefusesUnauthenticated(t *testing.T) {
 	c := h.dial(t)
 	err := c.Mail("someone@example.com", nil)
 	if err == nil {
-		t.Fatal("SECURITY: accepted MAIL FROM with no authentication — this is an open relay")
+		t.Fatal("SECURITY: accepted MAIL FROM with no authentication: this is an open relay")
 	}
 }
 
@@ -207,7 +207,7 @@ func TestOutboundIsNotClaimedByInboundWorkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(inbound) != 0 {
-		t.Fatalf("SECURITY: the inbound claim picked up %d outbound message(s) — "+
+		t.Fatalf("SECURITY: the inbound claim picked up %d outbound message(s): "+
 			"they would be delivered back to the sender's own primary", len(inbound))
 	}
 

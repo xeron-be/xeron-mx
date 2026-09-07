@@ -617,7 +617,7 @@ func (c *Config) Validate() error {
 		}
 
 		if !c.HTTP.ACME.TermsAgreed {
-			return fmt.Errorf("http.acme.terms_agreed must be true to request certificates — " +
+			return fmt.Errorf("http.acme.terms_agreed must be true to request certificates: " +
 				"this accepts the CA subscriber agreement on your behalf")
 		}
 		if c.HTTP.TLSCert != "" {
@@ -692,7 +692,7 @@ func (c *Config) Validate() error {
 		}
 		if len(c.Alerts.Email.To) > 0 {
 			if c.Alerts.Email.Host == "" {
-				return fmt.Errorf("alerts.email.host must be set — the relay the alerts go through, " +
+				return fmt.Errorf("alerts.email.host must be set: the relay the alerts go through, " +
 					"which should not be the mail server this instance is watching")
 			}
 			if c.Alerts.Email.From == "" {
@@ -713,7 +713,7 @@ func (c *Config) Validate() error {
 		switch c.Outbound.Mode {
 		case "relay":
 			if c.Outbound.RelayHost == "" {
-				return fmt.Errorf("outbound.relay_host must be set in relay mode — " +
+				return fmt.Errorf("outbound.relay_host must be set in relay mode: " +
 					"the smarthost that actually sends the mail")
 			}
 			if c.Outbound.RelayPort < 1 || c.Outbound.RelayPort > 65535 {
@@ -758,7 +758,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("oidc.client_id must be set when OIDC is enabled")
 		}
 		if c.OIDC.RedirectURL == "" && c.HTTP.BaseURL == "" {
-			return fmt.Errorf("either oidc.redirect_url or http.base_url must be set — " +
+			return fmt.Errorf("either oidc.redirect_url or http.base_url must be set: " +
 				"the provider has to be told exactly where to send the browser back")
 		}
 		switch c.OIDC.DefaultRole {
@@ -775,7 +775,7 @@ func (c *Config) Validate() error {
 
 	if c.Cluster.Enabled {
 		if c.Cluster.Secret == "" {
-			return fmt.Errorf("cluster.secret must be set when clustering is enabled — " +
+			return fmt.Errorf("cluster.secret must be set when clustering is enabled: " +
 				"the cluster endpoints hand out configuration and must not be open")
 		}
 		if len(c.Cluster.Secret) < 16 {

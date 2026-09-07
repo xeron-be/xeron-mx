@@ -271,7 +271,7 @@ func TestEventsSinceIsOrderedAndBounded(t *testing.T) {
 	}
 	for i, e := range events {
 		if want := int64(3 + i); e.ID != want {
-			t.Fatalf("event %d has id %d, want %d — a tailer needs them oldest first", i, e.ID, want)
+			t.Fatalf("event %d has id %d, want %d: a tailer needs them oldest first", i, e.ID, want)
 		}
 	}
 }

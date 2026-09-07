@@ -450,7 +450,7 @@ func TestDomainCannotBeRenamed(t *testing.T) {
 		"name": "other.example",
 	}, cookie)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("rename returned %d, want 400 — queued mail would be orphaned", rec.Code)
+		t.Fatalf("rename returned %d, want 400: queued mail would be orphaned", rec.Code)
 	}
 }
 

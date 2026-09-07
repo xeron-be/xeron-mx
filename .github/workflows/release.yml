@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  cli:
+    name: Build and release xeronmxctl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Build and package CLI binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64 .exe"
+            "windows arm64 .exe"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r os arch ext <<< "$target"
+            output="dist/xeronmxctl-${VERSION}-${os}-${arch}${ext}"
+            echo "Building $output..."
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build \
+              -trimpath \
+              -ldflags="-s -w -X github.com/xeron-be/xeron-mx/internal/version.Version=${VERSION}" \
+              -o "$output" ./cmd/xeronmxctl
+
+            cd dist
+            if [ "$os" = "windows" ]; then
+              zip "xeronmxctl-${VERSION}-${os}-${arch}.zip" "xeronmxctl-${VERSION}-${os}-${arch}${ext}"
+              rm "xeronmxctl-${VERSION}-${os}-${arch}${ext}"
+            else
+              tar -czf "xeronmxctl-${VERSION}-${os}-${arch}.tar.gz" "xeronmxctl-${VERSION}-${os}-${arch}"
+              rm "xeronmxctl-${VERSION}-${os}-${arch}"
+            fi
+            cd ..
+          done
+
+          cd dist
+          sha256sum * > checksums.txt
+          cd ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          generate_release_notes: true

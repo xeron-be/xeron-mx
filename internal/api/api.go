@@ -119,7 +119,8 @@ func (s *Server) SetDNSBL(d *dnsbl.Checker)         { s.dnsbl = d }
 func (s *Server) SetClamAV(c *clamav.Scanner)       { s.clamav = c }
 func (s *Server) SetSpam(sp *spam.Checker)          { s.spam = sp }
 
-func (s *Server) Hub() *Hub { return s.hub }
+func (s *Server) Hub() *Hub             { return s.hub }
+func (s *Server) Handler() http.Handler { return s.srv.Handler }
 
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()

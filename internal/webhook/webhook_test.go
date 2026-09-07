@@ -48,7 +48,7 @@ func TestSignMatchesTheDocumentedConstruction(t *testing.T) {
 	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
 	if got := Sign([]byte("s3cret"), body); got != want {
-		t.Fatalf("Sign = %q, want %q — receivers implement this from the README", got, want)
+		t.Fatalf("Sign = %q, want %q: receivers implement this from the README", got, want)
 	}
 }
 

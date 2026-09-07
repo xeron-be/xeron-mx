@@ -544,7 +544,7 @@ func TestConfigDriftIsReported(t *testing.T) {
 
 	body := decodeBody(t, a.do(t, "GET", "/api/v1/cluster", nil, cookie))
 	if body["drifted"] != float64(1) {
-		t.Fatalf("drifted = %v, want 1 — a domain on one node and not another answers 550", body["drifted"])
+		t.Fatalf("drifted = %v, want 1: a domain on one node and not another answers 550", body["drifted"])
 	}
 }
 
