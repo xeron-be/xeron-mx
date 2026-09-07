@@ -12,7 +12,7 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/version"
 )
 
-const usage = `xeronmxctl — command line client for XeronMX
+const usage = `xeronmxctl: command line client for XeronMX
 
 Usage:
   xeronmxctl [flags] <command> [arguments]
@@ -51,7 +51,7 @@ func main() {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == 401 {
 			fmt.Fprintln(os.Stderr,
-				"  the token was refused — it may have expired, been revoked, "+
+				"  the token was refused (it may have expired, been revoked, "+
 					"or belong to an account that no longer exists")
 		}
 		os.Exit(1)

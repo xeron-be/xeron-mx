@@ -575,7 +575,7 @@ func probeHint(err error) string {
 		strings.Contains(msg, "econnrefused"):
 		return "The host answered but nothing is listening on that port. Check the port, and that the mail server is running."
 	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline exceeded"), strings.Contains(msg, "i/o timeout"):
-		return "No answer at all. A firewall is the usual cause — port 25 is blocked outbound by many hosting providers."
+		return "No answer at all. A firewall is the usual cause: port 25 is blocked outbound by many hosting providers."
 	case strings.Contains(msg, "starttls"):
 		return "The connection worked but TLS did not. Try the 'opportunistic' TLS mode, or check the certificate on the primary."
 	case strings.Contains(msg, "certificate"):
@@ -632,7 +632,7 @@ func (s *Server) handleDomainDNS(w http.ResponseWriter, r *http.Request) {
 		"records": records,
 		"checklist": []string{
 			"The primary MX record for " + d.Name + " keeps a lower priority number than 20.",
-			"Port 25 is reachable from the internet on this machine — many providers block it by default and will unblock on request.",
+			"Port 25 is reachable from the internet on this machine (many providers block it by default and will unblock on request).",
 			"The reverse DNS (PTR) of this server's IP resolves to " + mxHost + ", or strict senders will refuse to talk to it.",
 			"smtp.hostname in the configuration is set to " + mxHost + ".",
 			"A DMARC TXT record is published at _dmarc." + d.Name + " to guarantee deliverability on Gmail and Outlook.",

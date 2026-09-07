@@ -81,7 +81,7 @@ func (db *DB) migrate(ctx context.Context) error {
 		return nil
 	}
 	if current > schemaVersion {
-		return fmt.Errorf("store: database is schema v%d, this binary understands v%d — "+
+		return fmt.Errorf("store: database is schema v%d, this binary understands v%d: "+
 			"downgrading is not supported", current, schemaVersion)
 	}
 

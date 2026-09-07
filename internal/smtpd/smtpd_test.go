@@ -126,7 +126,7 @@ func TestRefusesRelayForUnknownDomain(t *testing.T) {
 	err := h.send(t, "spammer@evil.example", "victim@somewhere-else.example",
 		"Subject: spam\r\n\r\nbuy things\r\n")
 	if err == nil {
-		t.Fatal("SECURITY: accepted mail for an unconfigured domain — this is an open relay")
+		t.Fatal("SECURITY: accepted mail for an unconfigured domain: this is an open relay")
 	}
 
 	var smtpErr *smtp.SMTPError

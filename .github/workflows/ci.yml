@@ -3,10 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   check:
@@ -26,8 +28,6 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # The UI is built before the Go steps so go:embed compiles the real
-      # assets, and a TypeScript error fails CI rather than shipping quietly.
       - name: Build the admin UI
         run: |
           rm -rf internal/ui/dist/assets internal/ui/dist/index.html
@@ -45,9 +45,6 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      # The race detector is the point of running CI on Linux: it is what catches
-      # a bad queue claim, and it needs a C toolchain that Windows dev boxes
-      # usually lack.
       - name: Test with race detector
         run: go test -race -count=1 ./...
 
@@ -68,23 +65,43 @@ jobs:
       - name: Lint
         run: helm lint deploy/helm/xeronmx
 
-      # TestHelmChartRendersLoadableConfig calls helm itself and feeds every
-      # variant's generated xeronmx.yaml through the daemon's own loader. It
-      # skips when helm is absent, which is why it is pinned to a job that
-      # installs it.
       - name: Render and check against the config loader
         run: go test ./internal/config/ -run Helm -v
 
   docker:
-    name: Docker image builds
+    name: Build and publish Docker image
     runs-on: ubuntu-latest
+    needs: [check, chart]
     steps:
       - uses: actions/checkout@v4
+
       - uses: docker/setup-buildx-action@v3
-      - name: Build image
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
+          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=ci
+            VERSION=${{ github.ref_name }}

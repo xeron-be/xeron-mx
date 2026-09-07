@@ -90,7 +90,7 @@ func (s *Server) SetDiskGuard(path string, minBytes int64, check diskguard.Check
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	if s.cfg.RequireTLS && s.srv.TLSConfig == nil {
-		return fmt.Errorf("submission: outbound.require_tls is on but no certificate is configured — " +
+		return fmt.Errorf("submission: outbound.require_tls is on but no certificate is configured: " +
 			"set http.acme or smtp.tls_cert, or set outbound.require_tls: false to accept the risk")
 	}
 

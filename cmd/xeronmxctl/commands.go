@@ -224,7 +224,7 @@ func cmdDomains(ctx context.Context, c *Client, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown subcommand %q — try list, add, rm, test", sub)
+		return fmt.Errorf("unknown subcommand %q (try list, add, rm, test)", sub)
 	}
 }
 
@@ -371,7 +371,7 @@ func cmdQueue(ctx context.Context, c *Client, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown subcommand %q — try list, show, retry, rm, release", sub)
+		return fmt.Errorf("unknown subcommand %q (try list, show, retry, rm, release)", sub)
 	}
 }
 
@@ -431,7 +431,7 @@ func summarise(data map[string]any) string {
 func cmdFilters(ctx context.Context, c *Client, args []string) error {
 	sub, _ := split(args, "list")
 	if sub != "list" {
-		return fmt.Errorf("unknown subcommand %q — only list is available here; "+
+		return fmt.Errorf("unknown subcommand %q (only list is available here; "+
 			"filters are edited in the UI, where the pattern can be tried before it is saved", sub)
 	}
 
@@ -595,7 +595,7 @@ func cmdWebhooks(ctx context.Context, c *Client, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown subcommand %q — try list, test, deliveries", sub)
+		return fmt.Errorf("unknown subcommand %q (try list, test, deliveries)", sub)
 	}
 }
 
@@ -647,7 +647,7 @@ func cmdTokens(ctx context.Context, c *Client, args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("unknown subcommand %q — try list, rm. "+
+		return fmt.Errorf("unknown subcommand %q (try list, rm. "+
 			"New tokens are created in the UI, which is the only place the secret is ever shown", sub)
 	}
 }
@@ -782,7 +782,7 @@ func cmdConfig(ctx context.Context, c *Client, args []string) error {
 		}
 
 		if report.DryRun {
-			note("Dry run — nothing was changed.")
+			note("Dry run: nothing was changed.")
 		}
 		t := newTable("KIND", "NAME", "ACTION")
 		for _, d := range report.Domains {
