@@ -1,0 +1,149 @@
+{{/*
+The configuration is assembled as a dictionary and serialised once, rather than
+written out line by line.
+
+That is what makes `extraConfig` a deep merge instead of an append. Concatenating
+it would emit a second top-level `smtp:` key the moment anyone set
+`extraConfig.smtp.*`, and the daemon's YAML parser rejects duplicate keys — so
+the pod would refuse to start, on a value that looks perfectly reasonable.
+*/}}
+{{- $cfg := dict
+  "data_dir" "/var/lib/xeronmx"
+  "smtp" (dict
+    "addr" (printf ":%d" (int .Values.smtp.containerPort))
+    "hostname" .Values.hostname
+    "max_message_bytes" (int64 .Values.smtp.maxMessageBytes)
+    "max_connections" (int .Values.smtp.maxConnections))
+  "http" (dict
+    "addr" (printf ":%d" (int .Values.ui.containerPort))
+    "acme" (dict "enabled" .Values.acme.enabled))
+  "queue" (dict
+    "max_messages" (int64 .Values.queue.maxMessages)
+    "max_bytes" (int64 .Values.queue.maxBytes)
+    "min_free_disk_bytes" (int64 (default 1073741824 .Values.queue.minFreeDiskBytes))
+    "retention" .Values.queue.retention
+    "workers" (int .Values.queue.workers))
+  "health" (dict
+    "interval" .Values.health.interval
+    "failure_threshold" (int .Values.health.failureThreshold)
+    "success_threshold" (int .Values.health.successThreshold))
+  "metrics" (dict "enabled" .Values.metrics.enabled)
+  "spam" (dict "enabled" .Values.spam.enabled)
+  "outbound" (dict "enabled" .Values.submission.enabled)
+  "webhooks" (dict
+    "enabled" .Values.webhooks.enabled
+    "workers" (int .Values.webhooks.workers)
+    "max_attempts" (int .Values.webhooks.maxAttempts)
+    "retry_base" .Values.webhooks.retryBase
+    "retry_max" .Values.webhooks.retryMax
+    "retention" .Values.webhooks.retention)
+  "alerts" (dict "enabled" .Values.alerts.enabled)
+  "backup" (dict
+    "enabled" .Values.backup.enabled
+    "interval" .Values.backup.interval
+    "keep" (int .Values.backup.keep))
+  "oidc" (dict "enabled" .Values.oidc.enabled)
+  "cluster" (dict "enabled" .Values.cluster.enabled)
+  "maintenance" (dict "drain" (default false (and .Values.maintenance .Values.maintenance.drain)))
+  "log" (dict "level" .Values.log.level "format" .Values.log.format)
+-}}
+
+{{- if .Values.smtp.tlsSecretName -}}
+{{- $_ := set (get $cfg "smtp") "tls_cert" "/etc/xeronmx/tls/tls.crt" -}}
+{{- $_ := set (get $cfg "smtp") "tls_key" "/etc/xeronmx/tls/tls.key" -}}
+{{- end -}}
+
+{{- if .Values.ui.baseURL -}}
+{{- $_ := set (get $cfg "http") "base_url" .Values.ui.baseURL -}}
+{{- end -}}
+
+{{- if .Values.acme.enabled -}}
+{{- $_ := set (get (get $cfg "http") "acme") "email" .Values.acme.email -}}
+{{- $_ := set (get (get $cfg "http") "acme") "terms_agreed" .Values.acme.termsAgreed -}}
+{{- $_ := set (get (get $cfg "http") "acme") "domains" .Values.acme.domains -}}
+{{- end -}}
+
+{{- if .Values.spam.enabled -}}
+{{- $_ := set (get $cfg "spam") "url" .Values.spam.url -}}
+{{- $_ := set (get $cfg "spam") "reject_enabled" .Values.spam.rejectEnabled -}}
+{{- $_ := set (get $cfg "spam") "defer_enabled" .Values.spam.deferEnabled -}}
+{{- end -}}
+
+{{- if and .Values.clamav .Values.clamav.enabled -}}
+{{- $_ := set $cfg "clamav" (dict
+      "enabled" true
+      "addr" .Values.clamav.addr
+      "timeout" .Values.clamav.timeout
+      "action" .Values.clamav.action) -}}
+{{- end -}}
+
+{{- if and .Values.dnsbl .Values.dnsbl.enabled -}}
+{{- $_ := set $cfg "dnsbl" (dict
+      "enabled" true
+      "zones" .Values.dnsbl.zones
+      "timeout" .Values.dnsbl.timeout) -}}
+{{- end -}}
+
+{{- if .Values.submission.enabled -}}
+{{- $out := get $cfg "outbound" -}}
+{{- $_ := set $out "addr" (printf ":%d" (int .Values.submission.containerPort)) -}}
+{{- $_ := set $out "mode" .Values.submission.mode -}}
+{{- $_ := set $out "relay_host" .Values.submission.relayHost -}}
+{{- $_ := set $out "relay_port" (int .Values.submission.relayPort) -}}
+{{- $_ := set $out "relay_tls" .Values.submission.relayTLS -}}
+{{- $_ := set $out "require_tls" .Values.submission.requireTLS -}}
+{{- end -}}
+
+{{- if .Values.alerts.enabled -}}
+{{- $al := get $cfg "alerts" -}}
+{{- $_ := set $al "primary_down_after" .Values.alerts.primaryDownAfter -}}
+{{- $_ := set $al "min_interval" .Values.alerts.minInterval -}}
+{{- $_ := set $al "webhook" (dict "url" .Values.alerts.webhookURL) -}}
+{{- $_ := set $al "email" (dict
+      "from" .Values.alerts.email.from
+      "host" .Values.alerts.email.host
+      "port" (int .Values.alerts.email.port)
+      "tls" .Values.alerts.email.tls
+      "username" .Values.alerts.email.username
+      "to" .Values.alerts.email.to) -}}
+{{- end -}}
+
+{{- if .Values.oidc.enabled -}}
+{{- $o := get $cfg "oidc" -}}
+{{- $_ := set $o "issuer" .Values.oidc.issuer -}}
+{{- $_ := set $o "client_id" .Values.oidc.clientID -}}
+{{- $_ := set $o "auto_provision" .Values.oidc.autoProvision -}}
+{{- $_ := set $o "default_role" .Values.oidc.defaultRole -}}
+{{- $_ := set $o "allow_password_login" .Values.oidc.allowPasswordLogin -}}
+{{- $_ := set $o "allowed_domains" .Values.oidc.allowedDomains -}}
+{{- end -}}
+
+{{/*
+node_id, advertise_url, peers and primary_node_id are deliberately absent: they
+differ per replica and a ConfigMap is shared by all of them, so the StatefulSet
+supplies those four through the environment.
+*/}}
+{{- if .Values.cluster.enabled -}}
+{{- $c := get $cfg "cluster" -}}
+{{- $_ := set $c "interval" .Values.cluster.interval -}}
+{{- $_ := set $c "sync_config" .Values.cluster.syncConfig -}}
+{{- end -}}
+
+{{- with .Values.extraConfig -}}
+{{- $cfg = mergeOverwrite $cfg (deepCopy .) -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "xeronmx.fullname" . }}
+  labels:
+    {{- include "xeronmx.labels" . | nindent 4 }}
+data:
+  xeronmx.yaml: |
+    # Rendered by the XeronMX Helm chart. Edit values.yaml, not this.
+    #
+    # Nothing secret is here: the cluster secret, the OIDC client secret, the
+    # metrics token and every relay password arrive as environment variables
+    # from a Secret, because a ConfigMap is readable by anything in the
+    # namespace that can list ConfigMaps.
+    {{- toYaml $cfg | nindent 4 }}

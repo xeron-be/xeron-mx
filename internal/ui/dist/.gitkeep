@@ -1,0 +1,5 @@
+The admin UI build output lands in this directory (`make ui`).
+
+This placeholder is tracked so that `go:embed all:dist` in ../ui.go always has a
+directory to match, which is what lets `go build` succeed on a fresh clone with
+no Node installed. It is never served.

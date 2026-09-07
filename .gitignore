@@ -1,0 +1,37 @@
+# Build output
+/bin/
+/dist/
+# Anchored with a leading slash: a bare `xeronmx` would also ignore cmd/xeronmx/
+/xeronmx
+/xeronmx.exe
+
+# Runtime data: never commit a queue or a key
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.key
+
+# Local configuration
+xeronmx.yaml
+!xeronmx.example.yaml
+.env
+
+# Web build. The UI compiles into internal/ui/dist so go:embed can reach it;
+# only the placeholder that keeps the embed pattern valid is tracked.
+/web/node_modules/
+/internal/ui/dist/*
+!/internal/ui/dist/.gitkeep
+
+# Extracted design notes. Deliberately untracked: this is the source for the
+# GitHub wiki, kept out of the repository itself.
+/docs/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# TypeScript incremental build state
+web/tsconfig.tsbuildinfo

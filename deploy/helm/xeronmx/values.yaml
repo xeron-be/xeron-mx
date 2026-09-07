@@ -1,0 +1,284 @@
+# Default values for XeronMX.
+#
+# The two things you almost certainly have to set are `hostname` and, if you
+# want the panel reachable, `ui.ingress`. Everything else has a working default.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/xeron-be/xeron-mx
+  # Empty means the chart's appVersion. Pin it in production: "latest" and a
+  # rolling tag are the same mistake with different names.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# The name this server greets senders with, and the name its certificate must
+# carry. It should resolve to the SMTP service's external address, and it should
+# have a matching PTR record, or a good number of receivers will not talk to it.
+hostname: mx2.example.com
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Each replica gets its own volume. That is not a limitation to work around: the
+# spool is an encrypted directory beside a SQLite database, and two pods writing
+# to one of those is how you corrupt it. See `cluster` below for what running
+# more than one replica actually means.
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  annotations: {}
+
+smtp:
+  # The container listens high and the Service maps 25 onto it.
+  #
+  # Binding 25 directly would need either CAP_NET_BIND_SERVICE, which does not
+  # survive being a non-root user without ambient capabilities Kubernetes does
+  # not expose, or the ip_unprivileged_port_start sysctl. Letting the Service do
+  # the mapping needs neither and works on every cluster.
+  containerPort: 2525
+  service:
+    type: LoadBalancer
+    port: 25
+    annotations: {}
+    loadBalancerIP: ""
+    loadBalancerSourceRanges: []
+    # Local preserves the sender's IP address. Without it every connection
+    # appears to come from a node, which breaks per-source rate limiting and
+    # makes the logs useless for abuse handling.
+    externalTrafficPolicy: Local
+    nodePort: null
+  maxMessageBytes: 52428800
+  maxConnections: 200
+  # A TLS secret (tls.crt / tls.key) for STARTTLS, usually issued by
+  # cert-manager. Without one, senders fall back to an unencrypted session.
+  tlsSecretName: ""
+
+# Authenticated submission on 587, for sending through this host.
+submission:
+  enabled: false
+  containerPort: 2587
+  mode: relay
+  relayHost: ""
+  relayPort: 587
+  relayTLS: starttls
+  requireTLS: true
+  service:
+    type: LoadBalancer
+    port: 587
+    annotations: {}
+    loadBalancerIP: ""
+    externalTrafficPolicy: Local
+
+ui:
+  containerPort: 8080
+  # The address operators reach the panel at. It is also where the identity
+  # provider sends the browser back after single sign-on.
+  baseURL: ""
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ""
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: true
+      secretName: ""
+
+queue:
+  maxMessages: 100000
+  maxBytes: 21474836480
+  minFreeDiskBytes: 1073741824
+  retention: 168h
+  workers: 4
+
+health:
+  interval: 30s
+  failureThreshold: 3
+  successThreshold: 2
+
+# Automatic certificates from inside the pod are off by default.
+#
+# In Kubernetes the answer is cert-manager: it already solves HTTP-01 and DNS-01
+# for the whole cluster, it renews on a schedule you can see, and it puts the
+# result in a Secret this chart mounts. Running a second ACME client inside the
+# pod would mean two things racing for the same names.
+acme:
+  enabled: false
+  email: ""
+  domains: []
+  termsAgreed: false
+
+spam:
+  enabled: false
+  url: ""
+  password: ""
+  rejectEnabled: false
+  deferEnabled: true
+
+clamav:
+  enabled: false
+  addr: "clamav:3310"
+  timeout: 10s
+  action: quarantine
+
+dnsbl:
+  enabled: false
+  zones:
+    - zen.spamhaus.org
+    - bl.spamcop.net
+  timeout: 3s
+
+maintenance:
+  drain: false
+
+metrics:
+  enabled: true
+  # Leave empty for an open /metrics inside the cluster, or set it (or
+  # existingSecret) to require a bearer token.
+  token: ""
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+webhooks:
+  enabled: true
+  workers: 2
+  maxAttempts: 8
+  retryBase: 30s
+  retryMax: 1h
+  retention: 168h
+
+alerts:
+  enabled: false
+  primaryDownAfter: 5m
+  minInterval: 30m
+  webhookURL: ""
+  email:
+    to: []
+    from: ""
+    host: ""
+    port: 587
+    tls: starttls
+    username: ""
+    password: ""
+
+backup:
+  enabled: true
+  interval: 24h
+  keep: 7
+
+# Single sign-on for the panel.
+#
+# The client secret goes in `existingSecret` under XERONMX_OIDC_CLIENT_SECRET
+# for anything that is not a demo; `clientSecret` here writes it into a Secret
+# this chart owns, which means it also lands in the Helm release history.
+oidc:
+  enabled: false
+  issuer: ""
+  clientID: ""
+  clientSecret: ""
+  autoProvision: false
+  defaultRole: viewer
+  allowedDomains: []
+  # Keep the local password form working alongside the provider. Turning it off
+  # makes the provider the only way in — including when the provider is down.
+  allowPasswordLogin: true
+
+# Peer awareness between replicas.
+#
+# This does NOT replicate the queue, and no setting here will. Two replicas are
+# two independent backup MX nodes: DNS hands senders both, each accepts what it
+# is given, and each drains its own spool to the same primary. Nothing is lost
+# when one is down, because the sender used the other one.
+#
+# What this gives you is the fleet in one view, and configuration that cannot
+# silently differ between nodes — a domain that exists on one and not the other
+# is a backup MX answering 550 to half the internet.
+#
+# Peer addresses are generated from the StatefulSet, so nothing has to be listed
+# by hand: replica N is always reachable at the same in-cluster name.
+cluster:
+  enabled: false
+  # Replica 0 is the primary; the rest are followers. Followers can pull their
+  # configuration from it when syncConfig is on.
+  syncConfig: false
+  interval: 30s
+  # At least 16 characters. Every node needs the same one. Prefer existingSecret.
+  secret: ""
+
+# A pre-existing Secret holding any of:
+#   XERONMX_CLUSTER_SECRET, XERONMX_OIDC_CLIENT_SECRET,
+#   XERONMX_METRICS_TOKEN, XERONMX_OUTBOUND_RELAY_PASSWORD,
+#   XERONMX_ALERTS_EMAIL_PASSWORD, XERONMX_SPAM_PASSWORD
+# Keys present here win over the plaintext values above.
+existingSecret: ""
+
+log:
+  level: info
+  format: json
+
+# Anything here is merged into xeronmx.yaml verbatim, for settings the chart
+# does not model.
+extraConfig: {}
+
+extraEnv: []
+extraEnvFrom: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  # The image is FROM scratch and the daemon writes only to its data volume, so
+  # there is nothing for a writable root filesystem to be used for.
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Long enough for in-flight SMTP sessions to finish rather than being cut off
+# mid-DATA, which would make the sender retry a message that was nearly there.
+terminationGracePeriodSeconds: 60
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+updateStrategy:
+  type: RollingUpdate

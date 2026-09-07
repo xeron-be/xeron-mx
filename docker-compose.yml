@@ -1,0 +1,116 @@
+# XeronMX: backup MX with a queue you can see into.
+#
+#   docker compose up -d
+#
+# Then open http://<host>:8080 to finish setup.
+#
+# The companion CLI ships in the same image, which has no shell of its own:
+#   docker compose exec xeronmx /xeronmxctl --url http://127.0.0.1:8080 --token xmx_... status
+# Create the token in the panel under Settings.
+
+services:
+  xeronmx:
+    image: ghcr.io/xeron-be/xeron-mx:latest
+    # Building locally instead of pulling: docker compose up --build
+    build:
+      context: .
+      args:
+        VERSION: dev
+    container_name: xeronmx
+    restart: unless-stopped
+
+    ports:
+      # Port 25 must be reachable from the internet, or sending servers can
+      # never fall back to this host. Many providers block it outbound by
+      # default; inbound is what matters here.
+      - "25:25"
+      - "8080:8080"
+      # Submission, for authenticated outbound relaying (port 587).
+      # - "587:587"
+      # Required by http.acme. Let's Encrypt connects to port 80 by name to
+      # serve the HTTP-01 challenge. Without this mapping the challenge
+      # listener starts inside the container, logs that it is running, and
+      # never hears from the CA, so no certificate is ever issued.
+      # - "80:80"
+
+    environment:
+      XERONMX_DATA_DIR: /var/lib/xeronmx
+      # Must match the hostname your secondary MX record points at.
+      XERONMX_SMTP_HOSTNAME: mx2.example.com
+      XERONMX_LOG_FORMAT: json
+      XERONMX_LOG_LEVEL: info
+
+      # Anti-spam filtering via rspamd sidecar profile.
+      #   docker compose --profile spam up -d
+      # XERONMX_SPAM_ENABLED: "true"
+      # XERONMX_SPAM_URL: http://rspamd:11333
+
+      # Antivirus body scanning via ClamAV sidecar profile.
+      #   docker compose --profile clamav up -d
+      # XERONMX_CLAMAV_ENABLED: "true"
+      # XERONMX_CLAMAV_ADDR: tcp://clamav:3310
+      # XERONMX_CLAMAV_ACTION: quarantine
+
+      # Outbound relaying. Your mail server submits here on 587, and XeronMX
+      # hands the mail to a smarthost. Requires a certificate, so enable
+      # http.acme or set outbound.require_tls false on a trusted network.
+      # XERONMX_OUTBOUND_ENABLED: "true"
+      # XERONMX_OUTBOUND_RELAY_HOST: smtp.your-provider.example
+      # XERONMX_OUTBOUND_RELAY_USERNAME: apikey
+      # XERONMX_OUTBOUND_RELAY_PASSWORD: ...
+
+    volumes:
+      # Holds the SQLite database, the spool, and the encryption key.
+      # Back this up: losing master.key makes the queued mail unreadable.
+      - xeronmx-data:/var/lib/xeronmx
+
+    # The image runs as an unprivileged uid, so binding port 25 needs this one
+    # capability explicitly. Everything else is dropped.
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test: ["CMD", "/xeronmx", "-version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional spam filter. Started only with `--profile spam`.
+  # XeronMX fails open: if this container is down, mail is accepted anyway.
+  rspamd:
+    image: ghcr.io/rspamd/rspamd:latest
+    container_name: xeronmx-rspamd
+    restart: unless-stopped
+    profiles: ["spam"]
+    volumes:
+      - rspamd-data:/var/lib/rspamd
+    expose:
+      - "11333"
+    security_opt:
+      - no-new-privileges:true
+
+  # Optional antivirus scanner. Started only with `--profile clamav`.
+  # XeronMX streams message bodies via zINSTREAM to port 3310.
+  # Fails open: if ClamAV is offline or slow, mail is accepted.
+  clamav:
+    image: clamav/clamav:latest
+    container_name: xeronmx-clamav
+    restart: unless-stopped
+    profiles: ["clamav"]
+    volumes:
+      - clamav-data:/var/lib/clamav
+    expose:
+      - "3310"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  xeronmx-data:
+  rspamd-data:
+  clamav-data:

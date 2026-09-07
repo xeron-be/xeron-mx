@@ -1,0 +1,16 @@
+apiVersion: v2
+name: xeronmx
+description: Backup MX that holds your mail while the primary is down, with a UI, metrics and an API
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/xeron-be/xeron-mx
+sources:
+  - https://github.com/xeron-be/xeron-mx
+keywords:
+  - mail
+  - smtp
+  - backup-mx
+  - mx
+maintainers:
+  - name: XeronMX

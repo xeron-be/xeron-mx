@@ -1,0 +1,81 @@
+XeronMX {{ .Chart.AppVersion }} is installing as {{ include "xeronmx.fullname" . }}.
+
+1. Wait for the pods:
+
+     kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "xeronmx.fullname" . }}
+
+2. Open the panel and create the first administrator:
+{{- if .Values.ui.ingress.enabled }}
+
+     http{{ if .Values.ui.ingress.tls.enabled }}s{{ end }}://{{ .Values.ui.ingress.host }}
+{{- else }}
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "xeronmx.fullname" . }} 8080:{{ .Values.ui.service.port }}
+     # then open http://127.0.0.1:8080
+{{- end }}
+
+3. Point DNS at the SMTP service. Get its address with:
+
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "xeronmx.fullname" . }}-smtp
+{{- if eq .Values.smtp.service.type "LoadBalancer" }}
+
+   If EXTERNAL-IP stays <pending>, this cluster has no load balancer to satisfy
+   it — kind, minikube and most bare-metal clusters do not. Install one
+   (MetalLB), or set smtp.service.type=NodePort and route port 25 to the node
+   yourself.
+{{- end }}
+
+   Then publish a secondary MX for each domain, at a HIGHER priority number than
+   the primary — higher number means lower preference, so senders only come here
+   when the primary does not answer:
+
+     example.com.  IN  MX  10  mail.example.com.
+     example.com.  IN  MX  20  {{ .Values.hostname }}.
+
+   {{ .Values.hostname }} must resolve to that address, and its reverse DNS
+   should point back. Receivers that check will otherwise treat this host badly.
+
+{{- if not .Values.smtp.tlsSecretName }}
+
+4. No TLS certificate is mounted for SMTP, so STARTTLS is not offered and mail
+   arrives in clear. Issue one with cert-manager for {{ .Values.hostname }} and
+   set smtp.tlsSecretName to its Secret.
+{{- end }}
+
+{{- if .Values.ui.ingress.enabled }}
+{{- if not .Values.ui.baseURL }}
+
+!! ui.baseURL is empty. Set it to the address above, or single sign-on cannot
+   tell the identity provider where to send the browser back.
+{{- end }}
+{{- end }}
+
+{{- if gt (int .Values.replicaCount) 1 }}
+{{- if not .Values.cluster.enabled }}
+
+!! {{ .Values.replicaCount }} replicas are running with cluster.enabled=false.
+   They will work — each is an independent backup MX and DNS will spread mail
+   across them — but they cannot see each other, and nothing will tell you if
+   their configurations drift apart. A domain configured on one node and not
+   the other means half of the internet gets a 550. Turn on cluster.enabled and
+   set cluster.secret.
+{{- end }}
+
+   Note what more than one replica does and does not mean: each pod holds its
+   own spool. Mail is not replicated between them. Nothing is lost when one is
+   down — the sender simply used the other MX record — but a message queued on
+   a node that is down stays there until that node comes back.
+{{- end }}
+
+{{- if and .Values.cluster.enabled (not .Values.cluster.secret) (not .Values.existingSecret) }}
+
+!! cluster.enabled is on with no cluster.secret. The nodes will refuse each
+   other's calls and the fleet view will show one node.
+{{- end }}
+
+Manage it from a terminal with the bundled client:
+
+     kubectl -n {{ .Release.Namespace }} exec -it {{ include "xeronmx.fullname" . }}-0 -- \
+       /xeronmxctl --url http://127.0.0.1:{{ .Values.ui.containerPort }} --token <token> status
+
+Create the token in the panel under Settings.

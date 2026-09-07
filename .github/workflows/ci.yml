@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Build, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The UI is built before the Go steps so go:embed compiles the real
+      # assets, and a TypeScript error fails CI rather than shipping quietly.
+      - name: Build the admin UI
+        run: |
+          rm -rf internal/ui/dist/assets internal/ui/dist/index.html
+          cd web && npm ci --no-audit --no-fund && npm run build
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # The race detector is the point of running CI on Linux: it is what catches
+      # a bad queue claim, and it needs a C toolchain that Windows dev boxes
+      # usually lack.
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -trimpath ./...
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Lint
+        run: helm lint deploy/helm/xeronmx
+
+      # TestHelmChartRendersLoadableConfig calls helm itself and feeds every
+      # variant's generated xeronmx.yaml through the daemon's own loader. It
+      # skips when helm is absent, which is why it is pinned to a job that
+      # installs it.
+      - name: Render and check against the config loader
+        run: go test ./internal/config/ -run Helm -v
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          build-args: |
+            VERSION=ci
