@@ -1,6 +1,8 @@
 # UI stage. The admin panel is a Vite/React SPA that the Go binary embeds, so it
 # has to exist before the Go build runs.
-FROM node:22-alpine AS ui
+# Both build stages run on the builder's own platform and cross-compile, so a
+# multi-arch build does not run npm and the Go compiler under QEMU emulation.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS ui
 
 WORKDIR /ui
 
@@ -14,7 +16,7 @@ RUN mkdir -p /internal/ui/dist && npm run build
 
 # Build stage. CGO stays off: modernc.org/sqlite is pure Go, which is what lets
 # the final image be scratch rather than a distro with a libc in it.
-FROM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 
 WORKDIR /src
 
@@ -30,6 +32,8 @@ COPY --from=ui /internal/ui/dist ./internal/ui/dist
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
+ARG TARGETOS=linux
+ARG TARGETARCH
 
 # The data directory is created here so the runtime stage can copy it in already
 # owned by the unprivileged uid. A named volume inherits the ownership of the
@@ -37,7 +41,7 @@ ARG DATE=unknown
 # the volume lands as root:root and the daemon cannot create its database.
 RUN mkdir -p /skel/var/lib/xeronmx
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w \
         -X github.com/xeron-be/xeron-mx/internal/version.Version=${VERSION} \
@@ -48,7 +52,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # The companion CLI ships in the same image. The runtime stage is scratch, so
 # there is no shell to debug with; "kubectl exec -- /xeronmxctl status" is the
 # only way to ask a running node how it is doing without a browser.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -trimpath \
       -ldflags="-s -w \
         -X github.com/xeron-be/xeron-mx/internal/version.Version=${VERSION} \

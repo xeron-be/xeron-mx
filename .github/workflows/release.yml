@@ -1,17 +1,183 @@
 name: Release
 
+# Two kinds of build, from main only:
+#
+# - Every push to main publishes an "edge" build: a pre-release named `edge`
+#   that is replaced each time, and the image tags `:edge` and `:sha-<commit>`.
+#   It is what main looks like right now, not something to run in production.
+#
+# - "Run workflow" with a version (for example 1.2.0) publishes that version:
+#   the tag v1.2.0 on the exact commit that was tested, a GitHub release whose
+#   notes are that version's section of CHANGELOG.md, and the image tags
+#   `:1.2.0`, `:1.2` and `:latest`. A pre-release (ticked, or a version such as
+#   1.2.0-rc.1) gets only `:1.2.0-rc.1`, so `:latest` always means the newest
+#   stable release, which is what docker-compose.yml pulls.
+#
+# The tag is created by this workflow with GITHUB_TOKEN, and events caused by
+# that token start no other workflow. That is why the image is built here
+# rather than by a separate workflow listening for tags.
+
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
+      - ".gitattributes"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.2.0 (leave empty for an edge build)"
+        type: string
+        required: false
+        default: ""
+      prerelease:
+        description: "Publish it as a pre-release (the image does not become :latest)"
+        type: boolean
+        default: false
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  # Edge builds supersede each other; a versioned release is never cancelled
+  # by a push that lands while it runs.
+  group: release-${{ inputs.version || 'edge' }}
+  cancel-in-progress: ${{ !inputs.version }}
 
 jobs:
-  cli:
-    name: Build and release xeronmxctl
+  prepare:
+    name: Decide what to publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      label: ${{ steps.plan.outputs.label }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      image: ${{ steps.plan.outputs.image }}
+      images: ${{ steps.plan.outputs.images }}
+      date: ${{ steps.plan.outputs.date }}
+      commit: ${{ steps.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: plan
+        env:
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease || false }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          [ "$GITHUB_REF" = "refs/heads/main" ] ||
+            fail "Releases are built from main only; this run is on $GITHUB_REF."
+
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          short="${GITHUB_SHA::7}"
+          VERSION="$(echo "${VERSION#v}" | xargs)"
+
+          if [ -z "$VERSION" ]; then
+            kind=edge
+            tag=edge
+            label=edge
+            prerelease=true
+            images="$image:edge"$'\n'"$image:sha-$short"
+            {
+              echo "Automatic build of \`main\` at $GITHUB_SHA."
+              echo
+              echo "This is not a release. It is replaced by the next push to \`main\`;"
+              echo "for production, use the newest versioned release and \`$image:latest\`."
+              echo
+              echo "Docker image: \`$image:edge\` (or \`$image:sha-$short\` to pin this build)."
+            } > notes.md
+          else
+            [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] ||
+              fail "\"$VERSION\" is not a version: expected MAJOR.MINOR.PATCH, optionally -suffix."
+
+            kind=official
+            tag="v$VERSION"
+            label="$tag"
+            prerelease="$PRERELEASE"
+            [[ "$VERSION" == *-* ]] && prerelease=true
+
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              fail "The tag $tag already exists. Releases are never overwritten; pick the next version."
+            fi
+
+            # The notes are this version's section of the changelog, without
+            # the link references that close the file.
+            awk -v head="## [$VERSION]" '
+              index($0, head) == 1 { found = 1; next }
+              found && /^## \[/ { exit }
+              found && !/^\[[^]]+\]: / { print }
+            ' CHANGELOG.md > notes.md
+            grep -q '[^[:space:]]' notes.md ||
+              fail "CHANGELOG.md has no section \"## [$VERSION]\". Write it before releasing."
+
+            if [ "$prerelease" = true ]; then
+              images="$image:$VERSION"
+            else
+              # The chart installs the image tagged with its appVersion, so a
+              # release that forgot to bump it would install the previous one.
+              app="$(sed -n 's/^appVersion:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' deploy/helm/xeronmx/Chart.yaml)"
+              [ "$app" = "$VERSION" ] ||
+                fail "deploy/helm/xeronmx/Chart.yaml has appVersion \"$app\"; set it (and version) to \"$VERSION\" first."
+              IFS=. read -r major minor _ <<< "${VERSION%%-*}"
+              images="$image:$VERSION"$'\n'"$image:$major.$minor"$'\n'"$image:latest"
+            fi
+            printf '\n---\n\nDocker image: `%s:%s`\n' "$image" "$VERSION" >> notes.md
+          fi
+
+          {
+            echo "kind=$kind"
+            echo "version=$VERSION"
+            echo "tag=$tag"
+            echo "label=$label"
+            echo "prerelease=$prerelease"
+            echo "image=$image"
+            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "commit=$short"
+            echo "images<<EOF"
+            echo "$images"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Publishing $label ($kind)"
+            echo
+            echo "Commit: \`$GITHUB_SHA\`, pre-release: $prerelease"
+            echo
+            echo '```'
+            echo "$images"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
+          if-no-files-found: error
+
+  check:
+    name: Checks
+    needs: prepare
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  binaries:
+    name: Build binaries
+    needs: [prepare, check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      LABEL: ${{ needs.prepare.outputs.label }}
+      DATE: ${{ needs.prepare.outputs.date }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,49 +186,137 @@ jobs:
           go-version: "1.25"
           cache: true
 
-      - name: Build and package CLI binaries
-        env:
-          VERSION: ${{ github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The daemon embeds the panel, so it has to be built first.
+      - name: Build the admin UI
         run: |
+          rm -rf internal/ui/dist/assets internal/ui/dist/index.html
+          cd web && npm ci --no-audit --no-fund && npm run build
+
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          pkg=github.com/xeron-be/xeron-mx/internal/version
+          ldflags="-s -w -X $pkg.Version=$LABEL -X $pkg.Commit=$COMMIT -X $pkg.Date=$DATE"
           mkdir -p dist
-          targets=(
-            "linux amd64"
-            "linux arm64"
-            "darwin amd64"
-            "darwin arm64"
-            "windows amd64 .exe"
-            "windows arm64 .exe"
-          )
 
-          for target in "${targets[@]}"; do
-            read -r os arch ext <<< "$target"
-            output="dist/xeronmxctl-${VERSION}-${os}-${arch}${ext}"
-            echo "Building $output..."
-            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build \
-              -trimpath \
-              -ldflags="-s -w -X github.com/xeron-be/xeron-mx/internal/version.Version=${VERSION}" \
-              -o "$output" ./cmd/xeronmxctl
-
-            cd dist
-            if [ "$os" = "windows" ]; then
-              zip "xeronmxctl-${VERSION}-${os}-${arch}.zip" "xeronmxctl-${VERSION}-${os}-${arch}${ext}"
-              rm "xeronmxctl-${VERSION}-${os}-${arch}${ext}"
+          build() { # name os arch
+            local name=$1 os=$2 arch=$3 ext=""
+            [ "$os" = windows ] && ext=.exe
+            local dir="$name-$LABEL-$os-$arch"
+            mkdir -p "stage/$dir"
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags="$ldflags" \
+              -o "stage/$dir/$name$ext" "./cmd/$name"
+            cp LICENSE README.md "stage/$dir/"
+            if [ "$os" = windows ]; then
+              (cd stage && zip -qr "../dist/$dir.zip" "$dir")
             else
-              tar -czf "xeronmxctl-${VERSION}-${os}-${arch}.tar.gz" "xeronmxctl-${VERSION}-${os}-${arch}"
-              rm "xeronmxctl-${VERSION}-${os}-${arch}"
+              tar -C stage -czf "dist/$dir.tar.gz" "$dir"
             fi
-            cd ..
+          }
+
+          # The daemon targets Linux, where it runs as a service or in the image.
+          for arch in amd64 arm64; do
+            build xeronmx linux "$arch"
+          done
+          # The CLI runs from wherever the operator sits.
+          for os in linux darwin windows; do
+            for arch in amd64 arm64; do
+              build xeronmxctl "$os" "$arch"
+            done
           done
 
-          cd dist
-          sha256sum * > checksums.txt
-          cd ..
+          (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/checksums.txt
-          generate_release_notes: true
+          name: binaries
+          path: dist/*
+          if-no-files-found: error
+
+  image:
+    name: Build and push the image
+    needs: [prepare, check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only the OCI labels are taken from here; the tags were decided above.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare.outputs.label }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.prepare.outputs.images }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.label }}
+            COMMIT=${{ needs.prepare.outputs.commit }}
+            DATE=${{ needs.prepare.outputs.date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    name: Publish the GitHub release
+    needs: [prepare, binaries, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KIND: ${{ needs.prepare.outputs.kind }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          mv notes.md ../notes.md
+          files=(*)
+
+          if [ "$KIND" = edge ]; then
+            gh release delete edge --yes --cleanup-tag || true
+            gh release create edge "${files[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "Edge build (${GITHUB_SHA::7})" \
+              --notes-file ../notes.md \
+              --prerelease
+          else
+            flags=(--latest)
+            [ "$PRERELEASE" = true ] && flags=(--prerelease --latest=false)
+            gh release create "$TAG" "${files[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "XeronMX $VERSION" \
+              --notes-file ../notes.md \
+              "${flags[@]}"
+          fi
