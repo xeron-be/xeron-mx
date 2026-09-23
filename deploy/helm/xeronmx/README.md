@@ -4,6 +4,10 @@ Official Helm chart for deploying XeronMX on Kubernetes.
 
 XeronMX acts as an automated backup MX appliance. It queues incoming email during primary mail server outages in an encrypted spool, then forwards messages once the primary recovers.
 
+> **Beta.** The chart renders, lints and produces a configuration the daemon loads (checked in CI). It has run on kind with cloud-provider-kind: install, a `LoadBalancer` Service given an external address, mail through it, the spool surviving the pod's deletion, delivery to a Postfix in the cluster, and `helm upgrade` rolling the pod onto new values with the data kept. It has not run behind a cloud provider's load balancer yet.
+>
+> **Check that your load balancer preserves the client address.** Behind cloud-provider-kind's load balancer, a proxy, every connection arrived from the load balancer's own address even with `externalTrafficPolicy: Local`. XeronMX then evaluates SPF, blocklists and per-source limits against that one address, and every `Received:` header names it. Use a load balancer that passes connections through at layer 4 (MetalLB, GCP and Azure network load balancers, AWS NLB with IP targets), or turn on the PROXY protocol on the balancer and list its addresses in `smtp.proxyProtocolTrusted`. Either way, check a received message's `Received:` header after installing.
+
 ## Prerequisites
 
 - Kubernetes 1.25 or newer
@@ -86,6 +90,9 @@ Nodes communicate via HTTPS peer gossip using the headless service (`service-hea
 | `smtp.service.type` | `LoadBalancer` | Service type for public SMTP intake |
 | `smtp.tlsSecretName` | `""` | Kubernetes Secret containing `tls.crt` and `tls.key` for STARTTLS |
 | `queue.minFreeDiskBytes` | `1073741824` | Disk guard ceiling (default: 1 GiB), returns SMTP 452 if low |
+| `smtp.proxyProtocolTrusted` | `[]` | Load balancer addresses or CIDRs that send the PROXY protocol, so XeronMX sees senders' real addresses; required from them, ignored from everyone else |
+| `smtp.senderAuth` | `true` | Check SPF, DKIM and an existing ARC chain on every accepted message (never refuses mail) |
+| `queue.bounces` | `authenticated` | `authenticated` sends delivery status notifications only to senders proven by SPF or aligned DKIM; `off` never sends them |
 | `maintenance.drain` | `false` | Start the node in drain mode (rejects SMTP with 421) |
 | `clamav.enabled` | `false` | Enable ClamAV antivirus body scanning |
 | `dnsbl.enabled` | `false` | Enable DNSBL real-time connection reputation checks |

@@ -13,16 +13,6 @@ import (
 	msgdmarc "github.com/emersion/go-msgauth/dmarc"
 )
 
-type DMARCConfig struct {
-	Policy          string `json:"policy"`
-	SubdomainPolicy string `json:"subdomain_policy,omitempty"`
-	RUA             string `json:"rua,omitempty"`
-	RUF             string `json:"ruf,omitempty"`
-	Percent         int    `json:"percent,omitempty"`
-	DKIMAlignment   string `json:"adkim,omitempty"`
-	SPFAlignment    string `json:"aspf,omitempty"`
-}
-
 type CheckResult struct {
 	Valid           bool     `json:"valid"`
 	Found           bool     `json:"found"`
@@ -59,53 +49,6 @@ func DefaultValue(domain string, policy string) string {
 		p = "quarantine"
 	}
 	return fmt.Sprintf("v=DMARC1; p=%s; sp=%s; rua=mailto:dmarc@%s; pct=100", p, p, d)
-}
-
-func BuildValue(cfg DMARCConfig, domain string) string {
-	d := strings.Trim(domain, ".")
-	p := cfg.Policy
-	if p == "" {
-		p = "none"
-	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("v=DMARC1; p=%s", p))
-
-	sp := cfg.SubdomainPolicy
-	if sp != "" {
-		sb.WriteString(fmt.Sprintf("; sp=%s", sp))
-	}
-
-	rua := cfg.RUA
-	if rua != "" {
-		if !strings.HasPrefix(rua, "mailto:") {
-			rua = "mailto:" + rua
-		}
-		sb.WriteString(fmt.Sprintf("; rua=%s", rua))
-	} else if p != "none" {
-		sb.WriteString(fmt.Sprintf("; rua=mailto:dmarc@%s", d))
-	}
-
-	if cfg.RUF != "" {
-		ruf := cfg.RUF
-		if !strings.HasPrefix(ruf, "mailto:") {
-			ruf = "mailto:" + ruf
-		}
-		sb.WriteString(fmt.Sprintf("; ruf=%s", ruf))
-	}
-
-	if cfg.Percent > 0 && cfg.Percent <= 100 {
-		sb.WriteString(fmt.Sprintf("; pct=%d", cfg.Percent))
-	}
-
-	if cfg.DKIMAlignment != "" {
-		sb.WriteString(fmt.Sprintf("; adkim=%s", cfg.DKIMAlignment))
-	}
-
-	if cfg.SPFAlignment != "" {
-		sb.WriteString(fmt.Sprintf("; aspf=%s", cfg.SPFAlignment))
-	}
-
-	return sb.String()
 }
 
 func CheckDNS(ctx context.Context, domain string) (*CheckResult, error) {
@@ -174,77 +117,6 @@ func CheckDNS(ctx context.Context, domain string) (*CheckResult, error) {
 	res.RUA = parsed.ReportURIAggregate
 
 	return res, nil
-}
-
-func CheckAlignment(fromDomain, authDomain string, strict bool) bool {
-	f := strings.ToLower(strings.Trim(fromDomain, "."))
-	a := strings.ToLower(strings.Trim(authDomain, "."))
-
-	if f == "" || a == "" {
-		return false
-	}
-
-	if strict {
-		return f == a
-	}
-
-	if f == a {
-		return true
-	}
-
-	orgF := OrgDomain(f)
-	orgA := OrgDomain(a)
-
-	return orgF == orgA && orgF != ""
-}
-
-func OrgDomain(domain string) string {
-	d := strings.ToLower(strings.Trim(domain, "."))
-	parts := strings.Split(d, ".")
-	if len(parts) <= 2 {
-		return d
-	}
-
-	secondLevelSuffixes := map[string]bool{
-		"co.uk":     true,
-		"org.uk":    true,
-		"me.uk":     true,
-		"ltd.uk":    true,
-		"plc.uk":    true,
-		"net.uk":    true,
-		"sch.uk":    true,
-		"ac.uk":     true,
-		"gov.uk":    true,
-		"com.au":    true,
-		"net.au":    true,
-		"org.au":    true,
-		"edu.au":    true,
-		"gov.au":    true,
-		"co.nz":     true,
-		"net.nz":    true,
-		"org.nz":    true,
-		"co.jp":     true,
-		"ne.jp":     true,
-		"or.jp":     true,
-		"com.br":    true,
-		"net.br":    true,
-		"org.br":    true,
-		"com.de":    true,
-		"co.za":     true,
-		"com.sg":    true,
-		"asso.fr":   true,
-		"presse.fr": true,
-	}
-
-	lastTwo := parts[len(parts)-2] + "." + parts[len(parts)-1]
-	if secondLevelSuffixes[lastTwo] {
-		if len(parts) >= 3 {
-			return parts[len(parts)-3] + "." + lastTwo
-		}
-		return d
-	}
-
-	return parts[len(parts)-2] + "." + parts[len(parts)-1]
 }
 
 func cleanTXT(raw string) string {

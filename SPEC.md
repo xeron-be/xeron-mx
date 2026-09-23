@@ -29,6 +29,9 @@ Added to the scope during development, and shipped in v1.0:
 - Authenticated outbound submission (port 587) with DKIM signing and
   per-destination routing, for primaries that can receive but cannot send
 - ARC sealing of mail forwarded to the primary, and a DMARC helper
+- SPF and DKIM checked at intake (recorded, never used to refuse), bounces
+  (RFC 3464) to senders those checks authenticated, and optional per-domain
+  lists of known recipients
 - Inbound perimeter checks: DNSBL at connection time, ClamAV body scanning,
   regex content filters with quarantine, and the rspamd sidecar
 - Alerting (email and webhook) and event webhooks
@@ -91,6 +94,12 @@ First boot opens a web wizard at `http://<host>:8080`:
 - Message over the size ceiling → `552 5.3.4`
 - Unconfigured or disabled domain → `550 5.7.1`
 - Client listed on a configured DNSBL → `554 5.7.1` before any data is accepted
+- Domain with a list of known recipients, address not on it → `550 5.1.1` at
+  `RCPT TO`, so the sender is told at once
+- Mail accepted and then not delivered (a recipient or the message refused by
+  the primary with a 5xx, or the retention running out) → a delivery status
+  notification to the sender, only if SPF or aligned DKIM authenticated it at
+  intake; the failure is on the timeline and alerted either way
 
 ## 4. Technical architecture
 
@@ -144,8 +153,9 @@ First boot opens a web wizard at `http://<host>:8080`:
 > spool is addressed by message id, and it has since gained submission accounts
 > and spam verdicts (v2), content filters and quarantine (v3), DKIM keys and
 > outbound routes (v4), API tokens, webhook subscriptions with their delivery
-> outbox, cluster peers and OIDC identities (v5), and the `operator` role with
-> per-user `allowed_domains` (v6). Secrets in those tables (private keys, relay passwords, signing secrets)
+> outbox, cluster peers and OIDC identities (v5), the `operator` role with
+> per-user `allowed_domains` (v6), and the authentication results of each
+> message and the per-domain lists of known recipients (v7). Secrets in those tables (private keys, relay passwords, signing secrets)
 > are sealed with the same
 > master key the spool uses, so reading the database alone yields nothing usable.
 
@@ -240,6 +250,8 @@ GET    /api/v1/domains/:id            → one domain
 PATCH  /api/v1/domains/:id            → update it                                [admin]
 DELETE /api/v1/domains/:id            → remove it                                [admin]
 GET    /api/v1/domains/:id/dns        → the DNS records to publish
+GET    /api/v1/domains/:id/recipients → the known recipients (empty: every address is accepted)
+PUT    /api/v1/domains/:id/recipients → replace them                             [admin]
 POST   /api/v1/domains/:id/test       → test connectivity to the primary         [operator]
 GET    /api/v1/domains/:id/dkim       → the signing key's DNS record and state
 POST   /api/v1/domains/:id/dkim       → generate one (starts disabled)           [admin]
@@ -339,5 +351,16 @@ GET    /api/v1/cluster/config       → the primary's configuration, for a follo
 - Every cluster call is signed over its timestamp, method, path and body, inside
   a five-minute window. There is no unauthenticated mode: those endpoints hand
   out the configuration document
+- The ARC seal on mail forwarded to the primary states only what XeronMX
+  checked itself at intake (`none` when sender authentication is off). An
+  existing chain is validated at intake (RFC 8617 §5.2) and extended only with
+  the `cv` that validation produced; a chain already marked failed, or one
+  that was never validated (sender authentication off), is forwarded unsealed
+- Every accepted message carries a `Received:` trace header, and one that
+  already carries 50 is refused as a loop (`554 5.4.6`)
+- Bounces go only to senders authenticated by SPF or aligned DKIM, never to
+  the null sender, and are themselves sent from the null sender, so a backup
+  MX that cannot check recipients during an outage does not turn forged spam
+  into backscatter
 - Webhook payloads are signed with the same HMAC-SHA256 construction the alert
   webhook uses. One scheme, so a receiver cannot implement the wrong one

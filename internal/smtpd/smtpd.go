@@ -13,6 +13,8 @@ import (
 
 	"github.com/emersion/go-smtp"
 
+	"github.com/xeron-be/xeron-mx/internal/arc"
+	"github.com/xeron-be/xeron-mx/internal/authres"
 	"github.com/xeron-be/xeron-mx/internal/blob"
 	"github.com/xeron-be/xeron-mx/internal/clamav"
 	"github.com/xeron-be/xeron-mx/internal/config"
@@ -23,6 +25,7 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/maintenance"
 	"github.com/xeron-be/xeron-mx/internal/metrics"
 	"github.com/xeron-be/xeron-mx/internal/netlimit"
+	"github.com/xeron-be/xeron-mx/internal/proxy"
 	"github.com/xeron-be/xeron-mx/internal/spam"
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
@@ -43,6 +46,7 @@ type Server struct {
 	filters *filter.Set
 	dnsbl   *dnsbl.Checker
 	clamav  *clamav.Scanner
+	auth    *authres.Checker
 
 	maintenance *maintenance.Manager
 	diskPath    string
@@ -70,7 +74,7 @@ func New(cfg config.SMTPConfig, queue config.QueueConfig, db *store.DB, blobs *b
 
 	srv := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	srv.Addr = cfg.Addr
-	srv.Domain = cfg.Hostname
+	srv.Domain = mailutil.Hostname(cfg.Hostname)
 	srv.ReadTimeout = cfg.ReadTimeout
 	srv.WriteTimeout = cfg.WriteTimeout
 	srv.MaxMessageBytes = cfg.MaxMessageBytes
@@ -97,6 +101,7 @@ func New(cfg config.SMTPConfig, queue config.QueueConfig, db *store.DB, blobs *b
 func (s *Server) SetTLSConfig(cfg *tls.Config)          { s.srv.TLSConfig = cfg }
 func (s *Server) SetDNSBL(c *dnsbl.Checker)             { s.dnsbl = c }
 func (s *Server) SetClamAV(c *clamav.Scanner)           { s.clamav = c }
+func (s *Server) SetAuthChecker(c *authres.Checker)     { s.auth = c }
 func (s *Server) SetMaintenance(m *maintenance.Manager) { s.maintenance = m }
 func (s *Server) SetDiskGuard(path string, minBytes int64, check diskguard.CheckFunc) {
 	s.diskPath = path
@@ -110,10 +115,16 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("smtpd: listen on %s: %w", s.cfg.Addr, err)
 	}
 
-	ln = netlimit.Listen(ln, s.cfg.MaxConnections,
+	trusted, err := proxy.ParseTrusted(s.cfg.ProxyProtocolTrusted)
+	if err != nil {
+		ln.Close()
+		return fmt.Errorf("smtpd: smtp.proxy_protocol_trusted: %w", err)
+	}
+	ln = netlimit.Listen(proxy.Listen(ln, trusted), s.cfg.MaxConnections,
 		"421 4.7.0 Too many concurrent connections, try again later\r\n")
 
 	s.log.Info("smtp listener started",
+		"proxy_protocol_from", s.cfg.ProxyProtocolTrusted,
 		"addr", s.cfg.Addr,
 		"hostname", s.cfg.Hostname,
 		"starttls", s.srv.TLSConfig != nil,
@@ -166,7 +177,7 @@ func (s *Server) newSession(c *smtp.Conn) (smtp.Session, error) {
 			return nil, &smtp.SMTPError{
 				Code:         554,
 				EnhancedCode: smtp.EnhancedCode{5, 7, 1},
-				Message:      fmt.Sprintf("Client host [%s] blocked using %s", remote, res.Zone),
+				Message:      fmt.Sprintf("Client host [%s] blocked using %s", hostOf(remote), res.Zone),
 			}
 		}
 	}
@@ -310,6 +321,21 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 		}
 	}
 
+	known, err := s.srv.db.RecipientAllowed(ctx, d.ID, to)
+	if err != nil {
+		s.log.Error("recipient lookup failed", "domain", domainName, "error", err)
+		return tempError("temporarily unable to verify recipient")
+	}
+	if !known {
+		s.srv.count.MessagesRejected.Add(1)
+		s.log.Info("rejected unknown recipient", "domain", domainName)
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 1, 1},
+			Message:      "Recipient address rejected: user unknown",
+		}
+	}
+
 	if d.MaxQueueMessages != nil && *d.MaxQueueMessages > 0 {
 		pending, err := s.srv.db.CountPendingForDomain(ctx, d.ID)
 		if err != nil {
@@ -317,6 +343,20 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 			return tempError("temporarily unable to accept mail")
 		}
 		if pending >= *d.MaxQueueMessages {
+			s.srv.count.MessagesRejected.Add(1)
+			s.log.Warn("domain queue full, refusing with 452", "domain", domainName,
+				"pending", pending, "max", *d.MaxQueueMessages)
+			full := map[string]any{
+				"reason": "domain_cap", "domain": domainName,
+				"pending": pending, "max_queue_messages": *d.MaxQueueMessages,
+			}
+			domainID := d.ID
+			if err := s.srv.db.RecordEvent(ctx, &store.Event{Type: store.EventQueueFull, DomainID: &domainID, Data: full}); err != nil {
+				s.log.Warn("event not recorded", "type", store.EventQueueFull, "error", err)
+			}
+			if s.srv.notify != nil {
+				s.srv.notify.Notify(store.EventQueueFull, full)
+			}
 			return &smtp.SMTPError{
 				Code:         452,
 				EnhancedCode: smtp.EnhancedCode{4, 3, 1},
@@ -349,10 +389,26 @@ func (s *session) Data(r io.Reader) error {
 		return tempError("temporarily unable to accept mail")
 	}
 
+	spfDone := s.startSPF(ctx)
+
 	peeked, rest := peekHeaders(r, 64<<10)
 	subject := extractSubject(peeked)
 
-	written, err := s.srv.blobs.Put(id, rest, s.srv.cfg.MaxMessageBytes)
+	if mailutil.CountReceived(peeked) >= mailutil.MaxHops {
+		io.Copy(io.Discard, rest)
+		s.srv.count.MessagesRejected.Add(1)
+		s.log.Warn("mail refused: too many hops, probably a loop", "remote", s.remote, "from", s.from)
+		return &smtp.SMTPError{
+			Code:         554,
+			EnhancedCode: smtp.EnhancedCode{5, 4, 6},
+			Message:      "Too many hops, mail loop detected",
+		}
+	}
+
+	trace := s.trace(id)
+	rest = io.MultiReader(strings.NewReader(trace), rest)
+
+	written, err := s.srv.blobs.Put(id, rest, s.srv.cfg.MaxMessageBytes+int64(len(trace)))
 	if err != nil {
 		s.srv.blobs.Delete(id)
 		if strings.Contains(err.Error(), "exceeds") {
@@ -418,10 +474,21 @@ func (s *session) Data(r io.Reader) error {
 		}
 	}
 
-	malware, err := s.checkMalware(ctx, id)
-	if err != nil {
+	malwareScan := ""
+	malware, err := s.checkMalware(ctx, id, written)
+	switch {
+	case errors.Is(err, errTooLargeToScan):
+		malwareScan = fmt.Sprintf("skipped: larger than %d bytes", s.srv.clamav.MaxSize())
+		s.log.Info("malware scan skipped: message larger than clamav.max_size_bytes",
+			"id", id, "bytes", written, "max", s.srv.clamav.MaxSize())
+	case err != nil:
+		malwareScan = "failed: " + truncateReason(err.Error())
 		s.log.Warn("malware scan failed, failing open", "id", id, "error", err)
-	} else if malware != nil && malware.Infected {
+	case malware == nil:
+	case !malware.Infected:
+		malwareScan = "clean"
+	default:
+		malwareScan = "infected: " + malware.VirusName
 		s.log.Warn("malware detected", "id", id, "virus", malware.VirusName, "action", s.srv.clamav.Action())
 		if s.srv.clamav.Action() == "reject" {
 			s.srv.blobs.Delete(id)
@@ -437,6 +504,8 @@ func (s *session) Data(r io.Reader) error {
 		}
 		quarantine = fmt.Sprintf("malware: %s", malware.VirusName)
 	}
+
+	auth := s.checkAuth(ctx, id, spfDone, mailutil.HasHeader(peeked, "arc-seal"))
 
 	now := time.Now().UTC()
 	retention := s.srv.queue.Retention
@@ -458,6 +527,10 @@ func (s *session) Data(r io.Reader) error {
 		RemoteAddr:  s.remote,
 		Direction:   store.DirectionInbound,
 		SpamAction:  string(verdict.Action),
+
+		AuthResults:         auth.Header(),
+		MalwareScan:         malwareScan,
+		SenderAuthenticated: auth.Authenticates(s.from),
 	}
 	if !verdict.Skipped {
 		score := verdict.Score
@@ -489,15 +562,83 @@ func (s *session) Data(r io.Reader) error {
 		"id", id, "domain", s.domain, "from", s.from,
 		"recipients", len(s.rcpts), "bytes", written)
 
-	s.recordEvent(ctx, store.EventMailReceived, &id, map[string]any{
+	received := map[string]any{
 		"from": s.from, "to": s.rcpts, "bytes": written, "domain": s.domain,
-	})
+	}
+	if malwareScan != "" && malwareScan != "clean" {
+		received["malware_scan"] = malwareScan
+	}
+	s.recordEvent(ctx, store.EventMailReceived, &id, received)
 	if s.srv.notify != nil {
 		s.srv.notify.Notify(store.EventMailReceived, map[string]any{
 			"id": id, "domain": s.domain, "subject": subject, "bytes": written,
 		})
 	}
 	return nil
+}
+
+func (s *session) trace(id string) string {
+	t := mailutil.Trace{
+		Remote:   s.remote,
+		By:       s.srv.srv.Domain,
+		Protocol: mailutil.Protocol(false, false),
+		ID:       id,
+		At:       time.Now(),
+	}
+	if s.conn != nil {
+		t.Helo = s.conn.Hostname()
+		_, isTLS := s.conn.TLSConnectionState()
+		t.Protocol = mailutil.Protocol(isTLS, false)
+	}
+	if len(s.rcpts) == 1 {
+		t.Recipient = s.rcpts[0]
+	}
+	return t.Header()
+}
+
+func (s *session) startSPF(ctx context.Context) <-chan authres.Result {
+	if s.srv.auth == nil {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(s.remote)
+	if err != nil {
+		host = s.remote
+	}
+	helo := ""
+	if s.conn != nil {
+		helo = s.conn.Hostname()
+	}
+	from := s.from
+	done := make(chan authres.Result, 1)
+	go func() { done <- s.srv.auth.SPF(ctx, net.ParseIP(host), helo, from) }()
+	return done
+}
+
+func (s *session) checkAuth(ctx context.Context, id string, spfDone <-chan authres.Result, hasARC bool) authres.Result {
+	if spfDone == nil {
+		return authres.Result{}
+	}
+	res := <-spfDone
+	body, err := s.srv.blobs.Get(id)
+	if err != nil {
+		s.log.Warn("could not read the spooled body for dkim", "id", id, "error", err)
+		return res
+	}
+	res.DKIM = s.srv.auth.DKIM(ctx, body)
+	body.Close()
+
+	res.ARC = arc.CVNone
+	if hasARC {
+		body, err := s.srv.blobs.Get(id)
+		if err != nil {
+			s.log.Warn("could not read the spooled body for arc", "id", id, "error", err)
+			res.ARC = ""
+			return res
+		}
+		defer body.Close()
+		res.ARC = s.srv.auth.ARC(ctx, body)
+	}
+	return res
 }
 
 func (s *session) checkSpam(ctx context.Context, id string, plaintextSize int64) spam.Verdict {
@@ -524,14 +665,18 @@ func (s *session) checkSpam(ctx context.Context, id string, plaintextSize int64)
 	}, body, plaintextSize)
 }
 
-func (s *session) checkMalware(ctx context.Context, id string) (*clamav.Result, error) {
+var errTooLargeToScan = errors.New("larger than clamav.max_size_bytes")
+
+func (s *session) checkMalware(ctx context.Context, id string, size int64) (*clamav.Result, error) {
 	if s.srv.clamav == nil || !s.srv.clamav.Enabled() {
-		return &clamav.Result{Infected: false}, nil
+		return nil, nil
+	}
+	if max := s.srv.clamav.MaxSize(); max > 0 && size > max {
+		return nil, errTooLargeToScan
 	}
 	body, err := s.srv.blobs.Get(id)
 	if err != nil {
-		s.log.Warn("could not read spooled body for malware scan", "id", id, "error", err)
-		return &clamav.Result{Infected: false}, nil
+		return nil, fmt.Errorf("read the spooled body: %w", err)
 	}
 	defer body.Close()
 	return s.srv.clamav.Scan(ctx, body)
@@ -549,6 +694,20 @@ func (s *session) recordEvent(ctx context.Context, typ string, queueID *string, 
 
 		s.log.Warn("event not recorded", "type", typ, "error", err)
 	}
+}
+
+func truncateReason(s string) string {
+	if len(s) > 200 {
+		return s[:200]
+	}
+	return s
+}
+
+func hostOf(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }
 
 func tempError(msg string) *smtp.SMTPError {

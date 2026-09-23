@@ -44,8 +44,6 @@ func TestHashIsSaltedPerCall(t *testing.T) {
 	}
 }
 
-// A hash stored under older cost parameters must keep verifying after the
-// constants change, or raising the cost would lock every existing account out.
 func TestVerifyHonoursTheParametersInTheHash(t *testing.T) {
 	salt := []byte("0123456789abcdef")
 	key := argon2.IDKey([]byte("an older password"), salt, 1, 8*1024, 2, 16)
@@ -97,8 +95,6 @@ func TestOversizedPasswordsAreRefusedBeforeHashing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Answered as a plain mismatch, not an error, so a login form cannot tell
-	// "too long" from "wrong" and nobody pays for hashing a megabyte.
 	ok, err := VerifyPassword(long, hash)
 	if ok || err != nil {
 		t.Fatalf("VerifyPassword(too long) = %v, %v; want false, nil", ok, err)
@@ -118,8 +114,6 @@ func TestValidatePassword(t *testing.T) {
 		{"empty", "", false},
 		{"one short", strings.Repeat("a", MinPasswordLength-1), false},
 		{"exactly the minimum", strings.Repeat("a", MinPasswordLength), true},
-		// Length is counted in characters, not bytes: twelve accented letters
-		// are a twelve-character password even though they take 24 bytes.
 		{"multibyte at the minimum", strings.Repeat("é", MinPasswordLength), true},
 		{"multibyte one short", strings.Repeat("é", MinPasswordLength-1), false},
 		{"at the byte ceiling", strings.Repeat("a", MaxPasswordBytes), true},

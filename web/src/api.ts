@@ -162,6 +162,7 @@ export interface Domain {
     created_at: string;
     primary?: PrimaryState;
     pending?: number;
+    recipients_count?: number;
 }
 
 export interface DKIMInfo {
@@ -338,6 +339,9 @@ export interface Message {
     direction: "inbound" | "outbound";
     spam_action?: string;
     spam_score?: number | null;
+    auth_results?: string;
+    sender_authenticated?: boolean;
+    malware_scan?: string;
 }
 
 export interface TimelineEvent {
@@ -410,6 +414,12 @@ export const api = {
         }),
     deleteDKIM: (id: number) =>
         request<{ status: string }>(`/domains/${id}/dkim`, { method: "DELETE" }),
+    getRecipients: (id: number) => request<{ recipients: string[] }>(`/domains/${id}/recipients`),
+    setRecipients: (id: number, recipients: string[]) =>
+        request<{ recipients: string[] }>(`/domains/${id}/recipients`, {
+            method: "PUT",
+            body: JSON.stringify({ recipients }),
+        }),
     getDMARC: (id: number) => request<DMARCInfo>(`/domains/${id}/dmarc`),
     checkDMARC: (id: number) =>
         request<DMARCDNSCheck>(`/domains/${id}/dmarc/check`, { method: "POST" }),

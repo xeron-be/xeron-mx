@@ -246,3 +246,26 @@ func TestSplitListTrimsAndDropsEmpties(t *testing.T) {
 		t.Fatalf("splitList = %q", got)
 	}
 }
+
+func TestProxyProtocolRangesAreValidated(t *testing.T) {
+	c := base()
+	c.SMTP.ProxyProtocolTrusted = []string{"10.0.0.0/8", "192.0.2.7"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid ranges were refused: %v", err)
+	}
+	c.SMTP.ProxyProtocolTrusted = []string{"10.0.0.0/8", "load-balancer"}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "proxy_protocol_trusted") {
+		t.Fatalf("Validate = %v; want an error naming smtp.proxy_protocol_trusted", err)
+	}
+}
+
+func TestProxyProtocolRangesFromTheEnvironment(t *testing.T) {
+	t.Setenv("XERONMX_SMTP_PROXY_PROTOCOL_TRUSTED", "10.0.0.0/8,192.0.2.7")
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.SMTP.ProxyProtocolTrusted) != 2 || c.SMTP.ProxyProtocolTrusted[1] != "192.0.2.7" {
+		t.Fatalf("proxy_protocol_trusted = %v", c.SMTP.ProxyProtocolTrusted)
+	}
+}

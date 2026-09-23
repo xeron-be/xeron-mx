@@ -48,7 +48,7 @@ func (e *APIError) Error() string {
 func NewClient(s Settings) (*Client, error) {
 	if s.URL == "" {
 		return nil, errors.New("no server URL. Pass --url, set XERONMX_URL, " +
-			"or run: xeronmxctl login --url https://mx2.example.com --token xmx_...")
+			"or run: xeronmxctl login --url https://mx2.example.com --token <token>")
 	}
 	u, err := url.Parse(s.URL)
 	if err != nil || u.Host == "" {
@@ -174,8 +174,8 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 	return c.do(ctx, http.MethodPost, path, body, out)
 }
 
-func (c *Client) patch(ctx context.Context, path string, body, out any) error {
-	return c.do(ctx, http.MethodPatch, path, body, out)
+func (c *Client) put(ctx context.Context, path string, body, out any) error {
+	return c.do(ctx, http.MethodPut, path, body, out)
 }
 
 func (c *Client) delete(ctx context.Context, path string, out any) error {

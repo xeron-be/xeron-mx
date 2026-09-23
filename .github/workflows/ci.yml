@@ -1,8 +1,5 @@
 name: CI
 
-# Checks only: nothing here publishes anything. Pull requests run it directly;
-# release.yml calls it before every build it publishes, which is what covers
-# pushes to main.
 on:
   pull_request:
   workflow_call:
@@ -16,14 +13,14 @@ jobs:
     name: Build, vet and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -59,9 +56,9 @@ jobs:
     name: Helm chart
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache: true
@@ -72,19 +69,36 @@ jobs:
       - name: Render and check against the config loader
         run: go test ./internal/config/ -run Helm -v
 
-  # A pull request that breaks the Dockerfile should fail here rather than on
-  # main. Releases build the image themselves, for every platform, so this only
-  # runs for pull requests.
+  drill:
+    name: Outage drill (Postfix, crashes, 25 MB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Build the daemon
+        run: CGO_ENABLED=0 go build -trimpath -o bin/xeronmx ./cmd/xeronmx
+
+      - name: Install swaks
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq swaks
+
+      - name: Run the drill
+        run: bash test/drill/run.sh
+
   docker:
     name: Docker image builds
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: false

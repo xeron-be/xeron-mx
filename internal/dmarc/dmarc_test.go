@@ -24,85 +24,10 @@ func TestRecordName(t *testing.T) {
 	}
 }
 
-func TestBuildValue(t *testing.T) {
-	cfg := DMARCConfig{
-		Policy:          "quarantine",
-		SubdomainPolicy: "reject",
-		RUA:             "mailto:reports@example.com",
-		Percent:         100,
-		DKIMAlignment:   "r",
-		SPFAlignment:    "r",
-	}
-
-	val := BuildValue(cfg, "example.com")
-	expectedParts := []string{
-		"v=DMARC1",
-		"p=quarantine",
-		"sp=reject",
-		"rua=mailto:reports@example.com",
-		"pct=100",
-		"adkim=r",
-		"aspf=r",
-	}
-
-	for _, p := range expectedParts {
-		if !contains(val, p) {
-			t.Errorf("BuildValue missing part %q, got: %s", p, val)
-		}
-	}
-}
-
 func TestDefaultValue(t *testing.T) {
 	val := DefaultValue("example.com", "quarantine")
 	if val != "v=DMARC1; p=quarantine; sp=quarantine; rua=mailto:dmarc@example.com; pct=100" {
 		t.Errorf("unexpected DefaultValue: %s", val)
-	}
-}
-
-func TestCheckAlignment(t *testing.T) {
-	cases := []struct {
-		from   string
-		auth   string
-		strict bool
-		want   bool
-	}{
-		{"example.com", "example.com", true, true},
-		{"example.com", "example.com", false, true},
-		{"sub.example.com", "example.com", true, false},
-		{"sub.example.com", "example.com", false, true},
-		{"mail.corp.example.co.uk", "example.co.uk", false, true},
-		{"mail.corp.example.co.uk", "example.co.uk", true, false},
-		{"different.org", "example.com", false, false},
-		{"", "example.com", false, false},
-		{"example.com", "", false, false},
-	}
-
-	for _, tc := range cases {
-		got := CheckAlignment(tc.from, tc.auth, tc.strict)
-		if got != tc.want {
-			t.Errorf("CheckAlignment(%q, %q, %v) = %v, want %v", tc.from, tc.auth, tc.strict, got, tc.want)
-		}
-	}
-}
-
-func TestOrgDomain(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"example.com", "example.com"},
-		{"sub.example.com", "example.com"},
-		{"a.b.c.example.com", "example.com"},
-		{"example.co.uk", "example.co.uk"},
-		{"mail.example.co.uk", "example.co.uk"},
-		{"sub.mail.example.asso.fr", "example.asso.fr"},
-	}
-
-	for _, tc := range cases {
-		got := OrgDomain(tc.in)
-		if got != tc.want {
-			t.Errorf("OrgDomain(%q) = %q, want %q", tc.in, got, tc.want)
-		}
 	}
 }
 
@@ -123,17 +48,4 @@ func TestCheckDNSLive(t *testing.T) {
 	if res.Policy == "" {
 		t.Errorf("google.com should have a non-empty DMARC policy")
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || (len(s) > 0 && len(substr) > 0 && hasSubstr(s, substr)))
-}
-
-func hasSubstr(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

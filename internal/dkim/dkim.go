@@ -24,7 +24,9 @@ const (
 )
 
 var SignedHeaders = []string{
-	"From", "To", "Subject", "Date", "Message-ID", "MIME-Version",
+	"From", "Reply-To", "Subject", "Date", "To", "Cc", "Message-ID",
+	"In-Reply-To", "References", "MIME-Version", "Content-Type",
+	"Content-Transfer-Encoding",
 }
 
 type Key struct {

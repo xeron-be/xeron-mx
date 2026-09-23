@@ -1,22 +1,5 @@
 name: Release
 
-# Two kinds of build, from main only:
-#
-# - Every push to main publishes an "edge" build: a pre-release named `edge`
-#   that is replaced each time, and the image tags `:edge` and `:sha-<commit>`.
-#   It is what main looks like right now, not something to run in production.
-#
-# - "Run workflow" with a version (for example 1.2.0) publishes that version:
-#   the tag v1.2.0 on the exact commit that was tested, a GitHub release whose
-#   notes are that version's section of CHANGELOG.md, and the image tags
-#   `:1.2.0`, `:1.2` and `:latest`. A pre-release (ticked, or a version such as
-#   1.2.0-rc.1) gets only `:1.2.0-rc.1`, so `:latest` always means the newest
-#   stable release, which is what docker-compose.yml pulls.
-#
-# The tag is created by this workflow with GITHUB_TOKEN, and events caused by
-# that token start no other workflow. That is why the image is built here
-# rather than by a separate workflow listening for tags.
-
 on:
   push:
     branches: [main]
@@ -40,8 +23,6 @@ on:
 permissions: {}
 
 concurrency:
-  # Edge builds supersede each other; a versioned release is never cancelled
-  # by a push that lands while it runs.
   group: release-${{ inputs.version || 'edge' }}
   cancel-in-progress: ${{ !inputs.version }}
 
@@ -62,7 +43,7 @@ jobs:
       date: ${{ steps.plan.outputs.date }}
       commit: ${{ steps.plan.outputs.commit }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: plan
         env:
@@ -107,8 +88,6 @@ jobs:
               fail "The tag $tag already exists. Releases are never overwritten; pick the next version."
             fi
 
-            # The notes are this version's section of the changelog, without
-            # the link references that close the file.
             awk -v head="## [$VERSION]" '
               index($0, head) == 1 { found = 1; next }
               found && /^## \[/ { exit }
@@ -120,8 +99,6 @@ jobs:
             if [ "$prerelease" = true ]; then
               images="$image:$VERSION"
             else
-              # The chart installs the image tagged with its appVersion, so a
-              # release that forgot to bump it would install the previous one.
               app="$(sed -n 's/^appVersion:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' deploy/helm/xeronmx/Chart.yaml)"
               [ "$app" = "$VERSION" ] ||
                 fail "deploy/helm/xeronmx/Chart.yaml has appVersion \"$app\"; set it (and version) to \"$VERSION\" first."
@@ -155,7 +132,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: notes
           path: notes.md
@@ -179,20 +156,19 @@ jobs:
       DATE: ${{ needs.prepare.outputs.date }}
       COMMIT: ${{ needs.prepare.outputs.commit }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # The daemon embeds the panel, so it has to be built first.
       - name: Build the admin UI
         run: |
           rm -rf internal/ui/dist/assets internal/ui/dist/index.html
@@ -205,7 +181,7 @@ jobs:
           ldflags="-s -w -X $pkg.Version=$LABEL -X $pkg.Commit=$COMMIT -X $pkg.Date=$DATE"
           mkdir -p dist
 
-          build() { # name os arch
+          build() {
             local name=$1 os=$2 arch=$3 ext=""
             [ "$os" = windows ] && ext=.exe
             local dir="$name-$LABEL-$os-$arch"
@@ -220,11 +196,9 @@ jobs:
             fi
           }
 
-          # The daemon targets Linux, where it runs as a service or in the image.
           for arch in amd64 arm64; do
             build xeronmx linux "$arch"
           done
-          # The CLI runs from wherever the operator sits.
           for os in linux darwin windows; do
             for arch in amd64 arm64; do
               build xeronmxctl "$os" "$arch"
@@ -233,7 +207,7 @@ jobs:
 
           (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries
           path: dist/*
@@ -247,25 +221,24 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Only the OCI labels are taken from here; the tags were decided above.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ needs.prepare.outputs.image }}
           labels: |
             org.opencontainers.image.version=${{ needs.prepare.outputs.label }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -286,10 +259,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
+          name: binaries
           path: dist
-          merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: notes
+          path: .
 
       - env:
           GH_TOKEN: ${{ github.token }}
@@ -301,7 +279,6 @@ jobs:
         working-directory: dist
         run: |
           set -euo pipefail
-          mv notes.md ../notes.md
           files=(*)
 
           if [ "$KIND" = edge ]; then

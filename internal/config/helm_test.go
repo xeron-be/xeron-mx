@@ -28,28 +28,48 @@ func TestHelmChartRendersLoadableConfig(t *testing.T) {
 	t.Setenv("XERONMX_CLUSTER_SECRET", "a shared secret of sixteen plus")
 
 	cases := []struct {
-		name string
-		args []string
+		name  string
+		args  []string
+		check func(*testing.T, *Config)
 	}{
-		{"defaults", nil},
+		{"defaults", nil, func(t *testing.T, c *Config) {
+			if !c.SMTP.SenderAuth || c.Queue.Bounces != BouncesAuthenticated {
+				t.Fatalf("sender_auth %v, bounces %q; want the daemon's defaults", c.SMTP.SenderAuth, c.Queue.Bounces)
+			}
+		}},
+		{"sender auth and bounces off", []string{
+			"--set", "smtp.senderAuth=false",
+			"--set", "queue.bounces=off",
+		}, func(t *testing.T, c *Config) {
+			if c.SMTP.SenderAuth || c.Queue.Bounces != BouncesOff {
+				t.Fatalf("sender_auth %v, bounces %q; want both off", c.SMTP.SenderAuth, c.Queue.Bounces)
+			}
+		}},
+		{"proxy protocol", []string{
+			"--set", "smtp.proxyProtocolTrusted={10.0.0.0/8,192.0.2.7}",
+		}, func(t *testing.T, c *Config) {
+			if len(c.SMTP.ProxyProtocolTrusted) != 2 || c.SMTP.ProxyProtocolTrusted[0] != "10.0.0.0/8" {
+				t.Fatalf("proxy_protocol_trusted = %v", c.SMTP.ProxyProtocolTrusted)
+			}
+		}},
 		{"cluster", []string{
 			"--set", "replicaCount=3",
 			"--set", "cluster.enabled=true",
 			"--set", "cluster.syncConfig=true",
-		}},
+		}, nil},
 		{"oidc", []string{
 			"--set", "oidc.enabled=true",
 			"--set", "oidc.issuer=https://id.example.com",
 			"--set", "oidc.clientID=xeronmx",
 			"--set", "ui.baseURL=https://mx2.example.com",
-		}},
+		}, nil},
 		{"submission and tls", []string{
 			"--set", "submission.enabled=true",
 			"--set", "submission.relayHost=smtp.example.com",
 			"--set", "smtp.tlsSecretName=mx2-tls",
 			"--set", "ui.ingress.enabled=true",
 			"--set", "ui.ingress.host=mx2.example.com",
-		}},
+		}, nil},
 		{"acme, spam and alerts", []string{
 			"--set", "acme.enabled=true",
 			"--set", "acme.termsAgreed=true",
@@ -59,11 +79,11 @@ func TestHelmChartRendersLoadableConfig(t *testing.T) {
 			"--set", "spam.url=http://rspamd:11333",
 			"--set", "alerts.enabled=true",
 			"--set", "alerts.webhookURL=https://hooks.example.com/x",
-		}},
+		}, nil},
 		{"extraConfig deep merge", []string{
 			"--set", "extraConfig.smtp.max_recipients=50",
 			"--set", "extraConfig.queue.retry_max=4h",
-		}},
+		}, nil},
 	}
 
 	for _, tc := range cases {
@@ -93,8 +113,12 @@ func TestHelmChartRendersLoadableConfig(t *testing.T) {
 			if err := os.WriteFile(path, []byte(rendered), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Load(path); err != nil {
+			cfg, err := Load(path)
+			if err != nil {
 				t.Fatalf("the chart produced a configuration the daemon rejects: %v\n\n%s", err, rendered)
+			}
+			if tc.check != nil {
+				tc.check(t, &cfg)
 			}
 		})
 	}

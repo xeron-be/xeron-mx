@@ -20,13 +20,16 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
 
-func (s *Sender) sendOutbound(ctx context.Context, m *store.Message, body io.Reader) error {
+func (s *Sender) sendOutbound(ctx context.Context, m *store.Message, body io.Reader) (recipients, error) {
 	body, err := s.signed(ctx, m, body)
 	if err != nil {
-		return err
+		return recipients{}, err
 	}
 
 	mode, route := s.routeFor(ctx, m)
+	if !s.outbound.Enabled {
+		mode, route = "direct", nil
+	}
 	switch mode {
 	case "relay":
 		return s.sendViaRelay(ctx, m, body, route)
@@ -34,7 +37,7 @@ func (s *Sender) sendOutbound(ctx context.Context, m *store.Message, body io.Rea
 		return s.sendDirect(ctx, m, body)
 	default:
 
-		return fmt.Errorf("outbound: unknown mode %q", mode)
+		return recipients{}, fmt.Errorf("outbound: unknown mode %q", mode)
 	}
 }
 
@@ -89,7 +92,7 @@ func (s *Sender) routeFor(ctx context.Context, m *store.Message) (string, *store
 	return r.Mode, r
 }
 
-func (s *Sender) sendViaRelay(ctx context.Context, m *store.Message, body io.Reader, override *store.Route) error {
+func (s *Sender) sendViaRelay(ctx context.Context, m *store.Message, body io.Reader, override *store.Route) (recipients, error) {
 	host, port, mode := s.outbound.RelayHost, s.outbound.RelayPort, s.outbound.RelayTLS
 	username, password := s.outbound.RelayUsername, s.outbound.RelayPassword
 
@@ -100,7 +103,7 @@ func (s *Sender) sendViaRelay(ctx context.Context, m *store.Message, body io.Rea
 		if len(override.RelayPassword) > 0 {
 			clear, err := s.blobs.Unseal(override.RelayPassword)
 			if err != nil {
-				return fmt.Errorf("route %s: stored relay password unreadable: %w",
+				return recipients{}, fmt.Errorf("route %s: stored relay password unreadable: %w",
 					override.Destination, err)
 			}
 			password = string(clear)
@@ -116,145 +119,245 @@ func (s *Sender) sendViaRelay(ctx context.Context, m *store.Message, body io.Rea
 
 	client, err := smtpclient.Dial(ctx, route, s.heloName())
 	if err != nil {
-		return err
+		return recipients{}, err
 	}
 	defer client.Close()
 
 	if username != "" {
 		ok, _ := client.Extension("AUTH")
 		if !ok {
-			return fmt.Errorf("relay %s does not offer AUTH but credentials are configured", host)
+			return recipients{}, fmt.Errorf("relay %s does not offer AUTH but credentials are configured", host)
 		}
 		if err := client.Auth(sasl.NewPlainClient("", username, password)); err != nil {
-
-			return &smtp.SMTPError{
-				Code:         535,
-				EnhancedCode: smtp.EnhancedCode{5, 7, 8},
-				Message:      "relay rejected the configured credentials: " + err.Error(),
-			}
+			s.log.Error("relay refused the configured credentials; mail is held until they are fixed",
+				"relay", host, "username", username, "error", err)
+			return recipients{}, fmt.Errorf("relay %s refused the configured credentials: %v", host, err)
 		}
 	}
 
-	return transmit(client, m, body, s.spamHeaders(m))
+	res, err := transmit(client, m, body, s.spamHeaders(m))
+	if m.EnvelopeFrom == "" && refusedNullSender(err) {
+		fallback := BounceSender(s.heloName())
+		s.log.Warn("relay refuses the null sender, sending the bounce from "+fallback,
+			"relay", host, "id", m.ID, "error", err)
+		if rerr := client.Reset(); rerr != nil {
+			return recipients{}, err
+		}
+		retry := *m
+		retry.EnvelopeFrom = fallback
+		return transmit(client, &retry, body, s.spamHeaders(m))
+	}
+	return res, err
 }
 
-func (s *Sender) sendDirect(ctx context.Context, m *store.Message, body io.Reader) error {
+func BounceSender(hostname string) string { return "MAILER-DAEMON@" + hostname }
 
+var errMailFrom = errors.New("MAIL FROM")
+
+func refusedNullSender(err error) bool {
+	var reply *smtp.SMTPError
+	return errors.Is(err, errMailFrom) && errors.As(err, &reply) && reply.Code >= 500 && reply.Code < 600
+}
+
+func (s *Sender) sendDirect(ctx context.Context, m *store.Message, body io.Reader) (recipients, error) {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return recipients{}, fmt.Errorf("read message: %w", err)
+	}
+
+	var all recipients
 	byDomain := map[string][]string{}
+	var domains []string
 	for _, rcpt := range m.EnvelopeTo {
 		at := strings.LastIndex(rcpt, "@")
-		if at < 0 {
-			return &smtp.SMTPError{Code: 550, Message: "malformed recipient " + rcpt}
+		if at < 0 || at == len(rcpt)-1 {
+			all.rejected = append(all.rejected, recipientFailure{rcpt, &smtp.SMTPError{
+				Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 3}, Message: "malformed recipient " + rcpt}})
+			continue
 		}
 		d := strings.ToLower(rcpt[at+1:])
+		if _, seen := byDomain[d]; !seen {
+			domains = append(domains, d)
+		}
 		byDomain[d] = append(byDomain[d], rcpt)
 	}
-	if len(byDomain) > 1 {
-		return fmt.Errorf("outbound: message has recipients in %d domains; "+
-			"direct mode delivers one domain per message", len(byDomain))
-	}
 
-	var domain string
-	for d := range byDomain {
-		domain = d
+	for _, domain := range domains {
+		rcpts := byDomain[domain]
+		res, err := s.directTo(ctx, m, domain, rcpts, raw)
+		if err == nil {
+			all.accepted = append(all.accepted, res.accepted...)
+			all.deferred = append(all.deferred, res.deferred...)
+			all.rejected = append(all.rejected, res.rejected...)
+			continue
+		}
+		var reply *smtp.SMTPError
+		permanent := errors.As(err, &reply) && reply.Code >= 500 && reply.Code < 600
+		for _, rcpt := range rcpts {
+			if permanent {
+				all.rejected = append(all.rejected, recipientFailure{rcpt, err})
+			} else {
+				all.deferred = append(all.deferred, recipientFailure{rcpt, err})
+			}
+		}
+		if ctx.Err() != nil {
+			break
+		}
 	}
+	return all, nil
+}
 
-	hosts, err := lookupMX(ctx, domain)
+func (s *Sender) directTo(ctx context.Context, m *store.Message, domain string, rcpts []string, raw []byte) (recipients, error) {
+	hosts, err := lookupMX(ctx, s.mxResolver(), domain)
 	if err != nil {
-		return fmt.Errorf("MX lookup for %s: %w", domain, err)
+		return recipients{}, fmt.Errorf("MX lookup for %s: %w", domain, err)
 	}
 
+	part := *m
+	part.EnvelopeTo = rcpts
 	var lastErr error
 	for _, host := range hosts {
+		addr, port := host, 25
+		if s.directAddr != nil {
+			addr, port = s.directAddr(host)
+		}
 		route := &store.Domain{
 			Name:        domain,
-			PrimaryHost: host,
-			PrimaryPort: 25,
-
-			PrimaryTLS: "opportunistic",
+			PrimaryHost: addr,
+			PrimaryPort: port,
+			PrimaryTLS:  "opportunistic",
 		}
 		client, err := smtpclient.Dial(ctx, route, s.heloName())
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		err = transmit(client, m, body, s.spamHeaders(m))
+		res, err := transmit(client, &part, bytes.NewReader(raw), s.spamHeaders(m))
 		client.Close()
 		if err == nil {
-			return nil
-		}
-		var permanent *smtp.SMTPError
-		if errors.As(err, &permanent) && permanent.Code >= 500 && permanent.Code < 600 {
-			return err
+			return res, nil
 		}
 		lastErr = err
-
 		break
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no MX host for %s accepted the message", domain)
 	}
-	return lastErr
+	return recipients{}, lastErr
 }
 
-func lookupMX(ctx context.Context, domain string) ([]string, error) {
-	resolver := &net.Resolver{}
-	records, err := resolver.LookupMX(ctx, domain)
-	if err != nil {
+type mxLookup interface {
+	LookupMX(ctx context.Context, name string) ([]*net.MX, error)
+	LookupHost(ctx context.Context, host string) ([]string, error)
+}
 
-		if _, aErr := resolver.LookupHost(ctx, domain); aErr == nil {
-			return []string{domain}, nil
-		}
+func (s *Sender) mxResolver() mxLookup {
+	if s.resolver != nil {
+		return s.resolver
+	}
+	return net.DefaultResolver
+}
+
+func notFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
+func lookupMX(ctx context.Context, resolver mxLookup, domain string) ([]string, error) {
+	records, err := resolver.LookupMX(ctx, domain)
+	if err != nil && !notFound(err) {
 		return nil, err
 	}
 	if len(records) == 0 {
-		return []string{domain}, nil
+		_, aErr := resolver.LookupHost(ctx, domain)
+		switch {
+		case aErr == nil:
+			return []string{domain}, nil
+		case notFound(aErr):
+			return nil, &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 1, 2},
+				Message: domain + " has no MX and no address, it cannot receive mail"}
+		default:
+			return nil, aErr
+		}
 	}
 
 	sort.SliceStable(records, func(i, j int) bool { return records[i].Pref < records[j].Pref })
 	hosts := make([]string, 0, len(records))
 	for _, r := range records {
 		host := strings.TrimSuffix(r.Host, ".")
-
 		if host == "" {
-			return nil, fmt.Errorf("%s publishes a null MX and accepts no mail", domain)
+			return nil, &smtp.SMTPError{Code: 556, EnhancedCode: smtp.EnhancedCode{5, 1, 10},
+				Message: domain + " publishes a null MX and accepts no mail"}
 		}
 		hosts = append(hosts, host)
 	}
 	return hosts, nil
 }
 
-func transmit(client *smtp.Client, m *store.Message, body io.Reader, extraHeaders string) error {
+type recipientFailure struct {
+	rcpt string
+	err  error
+}
+
+type recipients struct {
+	accepted []string
+	deferred []recipientFailure
+	rejected []recipientFailure
+}
+
+func addresses(failures []recipientFailure) []string {
+	out := make([]string, len(failures))
+	for i, f := range failures {
+		out[i] = f.rcpt
+	}
+	return out
+}
+
+func transmit(client *smtp.Client, m *store.Message, body io.Reader, extraHeaders string) (recipients, error) {
+	var res recipients
 	if err := client.Mail(m.EnvelopeFrom, nil); err != nil {
-		return fmt.Errorf("MAIL FROM: %w", err)
+		return recipients{}, fmt.Errorf("%w: %w", errMailFrom, err)
 	}
 	for _, rcpt := range m.EnvelopeTo {
-		if err := client.Rcpt(rcpt, nil); err != nil {
-			return fmt.Errorf("RCPT TO %s: %w", rcpt, err)
+		err := client.Rcpt(rcpt, nil)
+		var reply *smtp.SMTPError
+		switch {
+		case err == nil:
+			res.accepted = append(res.accepted, rcpt)
+		case errors.As(err, &reply) && reply.Code >= 500 && reply.Code < 600:
+			res.rejected = append(res.rejected, recipientFailure{rcpt, fmt.Errorf("RCPT TO %s: %w", rcpt, err)})
+		case errors.As(err, &reply):
+			res.deferred = append(res.deferred, recipientFailure{rcpt, fmt.Errorf("RCPT TO %s: %w", rcpt, err)})
+		default:
+			return recipients{}, fmt.Errorf("RCPT TO %s: %w", rcpt, err)
 		}
+	}
+	if len(res.accepted) == 0 {
+		_ = client.Quit()
+		return res, nil
 	}
 
 	w, err := client.Data()
 	if err != nil {
-		return fmt.Errorf("DATA: %w", err)
+		return recipients{}, fmt.Errorf("DATA: %w", err)
 	}
 
 	if extraHeaders != "" {
 		if _, err := io.WriteString(w, extraHeaders); err != nil {
 			w.Close()
-			return fmt.Errorf("write headers: %w", err)
+			return recipients{}, fmt.Errorf("write headers: %w", err)
 		}
 	}
 	if _, err := io.Copy(w, body); err != nil {
 		w.Close()
-		return fmt.Errorf("write body: %w", err)
+		return recipients{}, fmt.Errorf("write body: %w", err)
 	}
 
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("finish DATA: %w", err)
+		return recipients{}, fmt.Errorf("finish DATA: %w", err)
 	}
 	_ = client.Quit()
-	return nil
+	return res, nil
 }
 
 func (s *Sender) heloName() string {

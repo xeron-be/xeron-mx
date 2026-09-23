@@ -86,6 +86,19 @@ func (a *Alerter) Notify(event string, payload map[string]any) {
 	case store.EventPrimaryUp:
 		a.primaryUp(payload)
 	case store.EventQueueFull:
+		if reason, _ := payload["reason"].(string); reason == "domain_cap" {
+			domain, _ := payload["domain"].(string)
+			a.emit(Alert{
+				Key:      "queue_full:" + domain,
+				Severity: SeverityWarning,
+				Title:    fmt.Sprintf("The queue for %s is full and its mail is being refused", domain),
+				Detail: fmt.Sprintf("%s has reached its max_queue_messages ceiling, so XeronMX answers 452 "+
+					"to new mail for it. Senders will retry, and other domains are unaffected. "+
+					"Bring the primary back or raise the domain's ceiling.", domain),
+				Data: payload,
+			})
+			return
+		}
 		a.emit(Alert{
 			Key:      "queue_full",
 			Severity: SeverityCritical,
@@ -104,10 +117,68 @@ func (a *Alerter) Notify(event string, payload map[string]any) {
 				"This is the one outcome XeronMX exists to prevent, so it is worth understanding why.",
 			Data: payload,
 		})
+	case store.EventMailFailed:
+		if reason, _ := payload["reason"].(string); reason == "body unreadable" {
+			a.emit(Alert{
+				Key:      "mail_lost",
+				Severity: SeverityCritical,
+				Title:    "A queued message could not be read back from the spool",
+				Detail: "The message body is missing or does not decrypt, so it cannot be delivered. " +
+					"This is data lost on this machine: check the disk and the master key.",
+				Data: payload,
+			})
+			return
+		}
+		a.emit(Alert{
+			Key:      "mail_failed",
+			Severity: SeverityWarning,
+			Title:    "The primary permanently refused a message or a recipient",
+			Detail: "The primary answered 5xx, so XeronMX will not retry. The sender is told with a " +
+				"delivery status notification when its address could be authenticated; otherwise " +
+				"nobody but this alert knows the message was not delivered.",
+			Data: payload,
+		})
+	}
+}
+
+type StatusSource interface {
+	ListDomains(ctx context.Context) ([]*store.Domain, error)
+	PrimaryStatusFor(ctx context.Context, domainID int64) (*store.PrimaryStatus, error)
+}
+
+func (a *Alerter) Resume(ctx context.Context, db StatusSource) {
+	if !a.Enabled() {
+		return
+	}
+	domains, err := db.ListDomains(ctx)
+	if err != nil {
+		a.log.Warn("could not read the primaries' state at startup", "error", err)
+		return
+	}
+	for _, d := range domains {
+		if !d.Enabled {
+			continue
+		}
+		st, err := db.PrimaryStatusFor(ctx, d.ID)
+		if err != nil || st.IsUp || st.LastCheck == nil {
+			continue
+		}
+		since := *st.LastCheck
+		if st.LastDown != nil {
+			since = *st.LastDown
+		}
+		a.log.Info("primary already down at startup", "domain", d.Name, "since", since)
+		a.primaryDownSince(since, map[string]any{
+			"domain": d.Name, "up": false, "error": st.LastError, "since": since,
+		})
 	}
 }
 
 func (a *Alerter) primaryDown(payload map[string]any) {
+	a.primaryDownSince(time.Now(), payload)
+}
+
+func (a *Alerter) primaryDownSince(since time.Time, payload map[string]any) {
 	domain, _ := payload["domain"].(string)
 	if domain == "" {
 		return
@@ -136,11 +207,12 @@ func (a *Alerter) primaryDown(payload map[string]any) {
 		})
 	}
 
-	if a.cfg.PrimaryDownAfter <= 0 {
+	remaining := a.cfg.PrimaryDownAfter - time.Since(since)
+	if remaining <= 0 {
 		go fire()
 		return
 	}
-	a.grace[domain] = time.AfterFunc(a.cfg.PrimaryDownAfter, fire)
+	a.grace[domain] = time.AfterFunc(remaining, fire)
 }
 
 func (a *Alerter) primaryUp(payload map[string]any) {

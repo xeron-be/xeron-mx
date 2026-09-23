@@ -85,6 +85,7 @@ const EVENT_KEYS: Record<string, TranslationKey> = {
     user_updated: "ev.user_updated",
     user_deleted: "ev.user_deleted",
     maintenance_drain: "ev.maintenance_drain",
+    recipients_updated: "ev.recipients_updated",
 };
 
 export function eventLabel(type: string): string {

@@ -22,7 +22,7 @@ otherwise take for an accident.
 - Encrypted spool: AES-256-GCM in a streaming construction, per-file keys derived
   with HKDF-SHA256, with truncation and tampering detection
 - SQLite persistence with embedded schema and `user_version` migrations, from
-  the initial schema through v6
+  the initial schema through v7
 - Queue with atomic multi-worker claim, exponential backoff with jitter,
   retention expiry, and recovery of claims orphaned by a crash
 - Primary health checking over a real SMTP handshake, with separate failure and
@@ -89,9 +89,11 @@ otherwise take for an accident.
 
 #### Alerting and webhooks
 
-- Alerting over webhook and email. Three conditions raise an alert: a primary that has
+- Alerting over webhook and email. Four conditions raise an alert: a primary that has
   stayed down past `alerts.primary_down_after`, a spool that has filled and is
-  refusing mail, or a message given up on before delivery, plus the recovery
+  refusing mail, a message given up on before delivery, or a message or
+  recipient refused for good by the primary (critical when the body could not
+  be read back from the spool, since that is data lost here), plus the recovery
   when a primary comes back, but only if the outage was announced. Routine
   traffic raises nothing. A webhook body is signed with HMAC-SHA256 when a secret
   is set. Repeats of the same condition are throttled by `alerts.min_interval`,
@@ -170,8 +172,32 @@ otherwise take for an accident.
   and alignment checking
 - ARC (Authenticated Received Chain, RFC 8617) sealing (`internal/arc`): mail
   forwarded to the primary is sealed with `ARC-Authentication-Results`,
-  `ARC-Message-Signature` and `ARC-Seal` using the domain's DKIM key, preserving
-  the original authentication results across the extra hop
+  `ARC-Message-Signature` and `ARC-Seal` using the domain's DKIM key, carrying
+  the SPF and DKIM results checked at intake across the extra hop. A chain the
+  message already carries (Gmail and Microsoft 365 add one to everything they
+  send) is validated at intake, recorded as `arc=pass`, `arc=fail` or
+  `arc=none`, and extended with a new set whose `cv` states that result. RSA
+  and Ed25519 keys both seal. Checked against dkimpy's independent verifier,
+  including a live Gmail chain extended to `i=2`
+- `Received:` trace header on every accepted message, inbound and submitted
+  (RFC 5321 §4.4), naming the sending host's greeting and address, so the
+  primary's own filtering sees the original hop rather than only the backup
+  MX. A message that already carries 50 of them is refused with `554 5.4.6`
+  as a mail loop
+- Delivery status notifications (RFC 3464, `internal/dsn`). When the primary
+  refuses a recipient or a whole message for good, or a message outlives its
+  retention, the sender receives a standard report naming each failed
+  recipient, its status code and the primary's answer, with the original
+  headers attached. Only senders authenticated at intake receive one (SPF pass
+  for the envelope domain, or a passing DKIM signature aligned with it), never
+  the null sender, and the report itself is sent from the null sender:
+  a backup MX cannot check recipients while the primary is down, and bouncing
+  forged spam would make it a source of backscatter. Reports go through the
+  outbound module when it is enabled, straight to the sender's MX otherwise.
+  `queue.bounces: off` turns them off
+- The message detail, in the panel and in `GET /api/v1/queue/{id}`, shows the
+  authentication results recorded at intake and whether the sender counts as
+  authenticated, so an operator can tell why a bounce was or was not sent
 
 #### Inbound protection
 
@@ -210,6 +236,19 @@ otherwise take for an accident.
   unavailable, and a daemon health ping
 - `GET /api/v1/security/status` and `POST /api/v1/security/dnsbl/test`, with an
   interactive IP reputation test on the Filters page
+- SPF and DKIM checked for every accepted message (`internal/authres`,
+  `smtp.sender_auth`, on by default). SPF uses `blitiri.com.ar/go/spf`, which
+  passes the RFC 7208 test suite and is what chasquid and maddy use; DKIM uses
+  `go-msgauth`, already a dependency. Both run under a ten-second limit and
+  fail open: the result is recorded on the message and never refuses mail,
+  which stays the primary's decision
+- Known recipients, optional per domain: when a domain has a list, any other
+  address is refused at `RCPT TO` with `550 5.1.1`, so the sender learns at once
+  instead of through a bounce, and spam to invented addresses is never
+  accepted. Addresses are compared case-insensitively. Managed from the
+  Domains page, `GET`/`PUT /api/v1/domains/{id}/recipients` (admin),
+  `xeronmxctl domains recipients` and the `recipients:` key of the configuration
+  document, where leaving the key out leaves the list alone
 
 #### Operations
 
@@ -261,9 +300,41 @@ otherwise take for an accident.
   sender's address survives and per-source rate limiting still means something.
   Cluster peer addresses and the primary's node id are generated from the
   StatefulSet, so nothing has to be listed by hand
+- Outage drill in CI (`test/drill`, `make drill`): a real Postfix in a
+  container is taken down, 20 messages and a 25 MB attachment are held, XeronMX
+  is killed with SIGKILL once with the queue full and once mid-delivery, and
+  every message is checked byte for byte at the primary, with no loss and no
+  duplicate
+- An alert when a domain reaches its `max_queue_messages` ceiling: a warning
+  scoped to that domain (`queue_full:<domain>`), and the refusal on the domain's
+  timeline. The ceiling used to answer `452` silently
+- Helm values `smtp.senderAuth` and `queue.bounces`
+- PROXY protocol v1 and v2 on ports 25 and 587 (`smtp.proxy_protocol_trusted`,
+  Helm `smtp.proxyProtocolTrusted`), so a sender's own address survives a
+  load balancer that proxies the connection. Only the listed ranges may send
+  the header and they must; from anyone else it is an invalid command, never
+  a way to claim another address. Tested behind HAProxy (v1 and v2), directly,
+  and with a forged header
+- The malware scan outcome is recorded on every message (schema v8,
+  `malware_scan`): `clean`, `infected: <name>`, `skipped: larger than N bytes`
+  or `failed: <reason>`, shown in the message detail and on the timeline.
+  `clamav.max_size_bytes` (25 MiB, clamd's default `StreamMaxLength`) skips
+  larger messages without streaming them. A message that was never scanned
+  used to look exactly like a clean one
 
 ### Changed
 
+- Webhook and alert signatures cover a timestamp: every request carries
+  `X-XeronMX-Timestamp`, and `X-XeronMX-Signature` is the HMAC-SHA256 of
+  `<timestamp>.<body>`. Receivers reject anything more than five minutes old,
+  so a captured request can no longer be replayed. The README shows the check
+- Drain mode set at runtime still ends with the process, now documented as
+  deliberate: `maintenance.drain: true` keeps a node drained across restarts
+- GitHub Actions moved to their current majors (checkout v7, setup-go v7,
+  setup-node v7, upload-artifact v7, download-artifact v8, setup-helm v5 and the
+  Docker actions), all on Node 24
+- The Helm chart is marked beta until it has run behind a real cloud load
+  balancer
 - REST API errors are stable codes, `{"error": "<error_code>"}`, with the
   meaning carried by the HTTP status. The web UI translates them into all five
   languages and falls back to the raw code when a translation is missing
@@ -285,6 +356,15 @@ otherwise take for an accident.
 
 ### Security
 
+- The ARC seal vouched for checks that never ran. With a DKIM key enabled on a
+  domain, every message forwarded to the primary carried a signed
+  `spf=pass; dkim=pass; dmarc=pass`, written as a constant, and a message that
+  arrived with an ARC chain was sealed `cv=pass` without the chain being
+  looked at. A primary configured to trust XeronMX as an ARC sealer, which is
+  what the seal is for, would have let forged mail through its own checks.
+  The seal now carries the results actually checked at intake, `none` when
+  nothing was, and an existing chain is sealed only after it has been
+  validated, with the `cv` the validation produced
 - Dependencies raised past two advisories that were reachable from the ACME
   code path: an infinite loop on invalid input in `golang.org/x/text`
   (GO-2026-5970) and a Punycode validation failure in `golang.org/x/net/idna`
@@ -315,6 +395,67 @@ otherwise take for an accident.
 
 ### Fixed
 
+- A restart during an outage lost the alerts. The primary's state is kept in
+  the database but the alert was only armed when it changed, so after an
+  upgrade, a crash or a reboot inside the grace period no "primary down" alert
+  was ever sent, and after one the "answering again" notice was not. At
+  startup the alerter now reads the primaries already down and arms the grace
+  period from when the outage began (checked on AWS: restarted 11 seconds
+  into an outage, alerted at the minute, recovery announced)
+- Wrong relay credentials failed every outgoing message for good. A `535`
+  from the relay was taken as a permanent refusal of the message, so a typo in
+  `outbound.relay_password` bounced all outbound mail. It is now a temporary
+  failure, logged as an error, and the mail waits for the credentials to be
+  fixed, as Postfix does
+- Direct outbound delivery (`outbound.mode: direct`, and every bounce when the
+  outbound module is off) never delivered a message addressed to more than one
+  domain: each attempt failed with "direct mode delivers one domain per
+  message" until the message expired. Each domain now gets its own
+  transaction, and a domain that cannot be reached holds back only its own
+  recipients. A failed MX lookup (timeout, SERVFAIL) no longer falls back to
+  the domain's address record, which could deliver to a web server; it is
+  retried. A null MX (RFC 7505) and a domain with neither MX nor address now
+  fail at once (`556 5.1.10`, `550 5.1.2`) instead of being retried for the
+  whole retention
+- A bounce sent through a relay that refuses the null sender was lost. Amazon
+  SES answers `MAIL FROM:<>` with `501 Invalid MAIL FROM address provided`, so
+  the notification failed at once and, being a bounce, was never reported
+  anywhere. A bounce refused at `MAIL FROM` by a relay is now sent again in
+  the same session from `MAILER-DAEMON@<smtp.hostname>`, the address its
+  `From:` already shows. Direct delivery still uses the null sender. Log lines
+  for refused outbound mail no longer say "rejected by primary"
+- ARC seals failed verification whenever the body had an indented line: the
+  relaxed body canonicalization dropped leading whitespace instead of
+  reducing it to one space. Earlier sets were also hashed in header order
+  rather than instance order, and a domain with an Ed25519 key never sealed
+  at all
+- The submission listener announced itself as `localhost`: it now uses
+  `smtp.hostname`
+- `PATCH /api/v1/domains/:id`, `POST /api/v1/domains` and
+  `POST /api/v1/domains/:id/dkim` answered with a `created_at` of
+  `0001-01-01T00:00:00Z`: they now return the stored row
+- A primary with a self-signed, expired or mismatched certificate received no
+  mail at all under the default `opportunistic` TLS mode. The handshake
+  failure surfaced after the point where the connection could fall back to
+  plaintext, so every delivery failed, the primary was reported down, and the
+  queue held until messages expired. Opportunistic TLS now encrypts without
+  verifying the certificate, as Postfix's `may` level does, and falls back to
+  plaintext when the handshake itself fails. `starttls` still requires a
+  valid certificate
+- The DKIM DNS check listed a published key twice when its record was longer
+  than 255 characters: Cloudflare's resolver returns it split into quoted
+  strings and Google's joined, and the two were compared before being
+  cleaned
+- One refused recipient cost every other recipient of the same message. A
+  single `550` to `RCPT TO` (a mistyped or deleted mailbox) aborted the whole
+  transaction and was taken as a permanent rejection of the message: it was
+  marked failed and its body deleted, so the recipients the primary would have
+  accepted never received it. A `4xx` for one recipient (a full mailbox) held
+  back all the others until it cleared, or until the message expired with
+  everyone still waiting. Recipients are now settled one by one: the accepted
+  ones are delivered, the refused ones are recorded on the timeline, and a
+  message waits only for the recipients that were deferred. This covers mail
+  forwarded to the primary and outbound mail alike
 - A primary that accepted the connection and then stopped answering held the
   health probe, the "test connection" button and a delivery attempt for up to
   five minutes per SMTP command, whatever `health.timeout` or
@@ -455,10 +596,13 @@ otherwise take for an accident.
 
 ### Known limitations
 
-- The Helm chart has run on a single-node kind cluster with no cloud provider,
-  so its `LoadBalancer` Service has never been satisfied by a real external load
-  balancer, and `externalTrafficPolicy: Local` has not been observed preserving
-  sender addresses behind one
+- The Helm chart has run on kind with cloud-provider-kind (install, the
+  `LoadBalancer` Service, mail through it, persistence across pod deletion,
+  `helm upgrade`), not behind a cloud provider's load balancer. Behind a
+  load balancer that proxies connections, as cloud-provider-kind's does, the
+  client address is lost despite `externalTrafficPolicy: Local`: XeronMX sees
+  the load balancer's address for every sender; configure the PROXY protocol
+  (`smtp.proxyProtocolTrusted`) with such a balancer
 
 [Unreleased]: https://github.com/xeron-be/xeron-mx/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/xeron-be/xeron-mx/releases/tag/v1.0.0

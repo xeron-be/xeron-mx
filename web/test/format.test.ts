@@ -15,7 +15,6 @@ describe("bytes", () => {
         [1024 ** 2, "1.0 MB"],
         [1.5 * 1024 ** 3, "1.5 GB"],
         [1024 ** 4, "1.0 TB"],
-        // TB is the last unit: beyond it the number grows instead.
         [2048 * 1024 ** 4, "2048 TB"],
     ])("%d bytes reads as %s", (n, want) => {
         expect(bytes(n)).toBe(want);
@@ -62,8 +61,6 @@ describe("relative", () => {
 });
 
 describe("events", () => {
-    // A new event type in the daemon with no entry here still renders, but in
-    // English whatever language the panel is set to.
     it("labels every event type the daemon records", () => {
         const types = eventTypes();
         expect(types).toContain("primary_down");

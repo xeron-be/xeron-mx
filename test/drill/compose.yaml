@@ -1,0 +1,22 @@
+name: xeronmx-drill
+
+services:
+  mailhost:
+    build:
+      context: .
+      dockerfile: Dockerfile.mailhost
+    hostname: mailhost.example.test
+
+  xeronmx:
+    image: debian:trixie-slim
+    command: ["/usr/local/bin/xeronmx", "-config", "/etc/xeronmx/xeronmx.yaml"]
+    volumes:
+      - ${XERONMX_BINARY:-../../bin/xeronmx}:/usr/local/bin/xeronmx:ro
+      - ./drill.yaml:/etc/xeronmx/xeronmx.yaml:ro
+      - spool:/var/lib/xeronmx
+    ports:
+      - "127.0.0.1:2525:25"
+      - "127.0.0.1:8088:8080"
+
+volumes:
+  spool:

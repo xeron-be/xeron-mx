@@ -13,7 +13,9 @@ the pod would refuse to start, on a value that looks perfectly reasonable.
     "addr" (printf ":%d" (int .Values.smtp.containerPort))
     "hostname" .Values.hostname
     "max_message_bytes" (int64 .Values.smtp.maxMessageBytes)
-    "max_connections" (int .Values.smtp.maxConnections))
+    "max_connections" (int .Values.smtp.maxConnections)
+    "sender_auth" (ternary .Values.smtp.senderAuth true (hasKey .Values.smtp "senderAuth"))
+    "proxy_protocol_trusted" (default (list) .Values.smtp.proxyProtocolTrusted))
   "http" (dict
     "addr" (printf ":%d" (int .Values.ui.containerPort))
     "acme" (dict "enabled" .Values.acme.enabled))
@@ -22,7 +24,8 @@ the pod would refuse to start, on a value that looks perfectly reasonable.
     "max_bytes" (int64 .Values.queue.maxBytes)
     "min_free_disk_bytes" (int64 (default 1073741824 .Values.queue.minFreeDiskBytes))
     "retention" .Values.queue.retention
-    "workers" (int .Values.queue.workers))
+    "workers" (int .Values.queue.workers)
+    "bounces" (default "authenticated" .Values.queue.bounces))
   "health" (dict
     "interval" .Values.health.interval
     "failure_threshold" (int .Values.health.failureThreshold)

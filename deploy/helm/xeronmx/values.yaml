@@ -61,6 +61,17 @@ smtp:
   # A TLS secret (tls.crt / tls.key) for STARTTLS, usually issued by
   # cert-manager. Without one, senders fall back to an unencrypted session.
   tlsSecretName: ""
+  # Check SPF and DKIM (and validate an existing ARC chain) on every accepted
+  # message. Nothing is refused on the result: it is recorded, carried to the
+  # primary in the ARC seal, and decides who may be sent a bounce.
+  senderAuth: true
+  # Addresses or CIDR ranges of load balancers that send the PROXY protocol
+  # (v1 or v2) in front of ports 25 and 587, so XeronMX sees each sender's own
+  # address instead of the balancer's. Connections from these ranges must send
+  # the header; everyone else is served as usual and cannot use one. Needed
+  # behind a balancer that proxies (AWS Classic ELB, an NLB with instance
+  # targets and proxy protocol on, HAProxy, Envoy); leave empty otherwise.
+  proxyProtocolTrusted: []
 
 # Authenticated submission on 587, for sending through this host.
 submission:
@@ -104,6 +115,11 @@ queue:
   minFreeDiskBytes: 1073741824
   retention: 168h
   workers: 4
+  # authenticated: send a delivery status notification when the primary refuses
+  # a message or a recipient, or a message expires, but only to senders proven
+  # genuine by SPF or aligned DKIM (never to the forged senders of spam).
+  # off: never. Needs smtp.senderAuth for "authenticated".
+  bounces: authenticated
 
 health:
   interval: 30s

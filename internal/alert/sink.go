@@ -3,9 +3,6 @@ package alert
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,9 +15,13 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/mailutil"
 	"github.com/xeron-be/xeron-mx/internal/smtpclient"
 	"github.com/xeron-be/xeron-mx/internal/store"
+	"github.com/xeron-be/xeron-mx/internal/webhook"
 )
 
-const SignatureHeader = "X-XeronMX-Signature"
+const (
+	SignatureHeader = webhook.SignatureHeader
+	TimestampHeader = webhook.TimestampHeader
+)
 
 func (a *Alerter) postWebhook(ctx context.Context, al Alert) error {
 	body, err := json.Marshal(al)
@@ -35,11 +36,7 @@ func (a *Alerter) postWebhook(ctx context.Context, al Alert) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "XeronMX")
 
-	if a.cfg.Webhook.Secret != "" {
-		mac := hmac.New(sha256.New, []byte(a.cfg.Webhook.Secret))
-		mac.Write(body)
-		req.Header.Set(SignatureHeader, "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	}
+	webhook.SignRequest(req, []byte(a.cfg.Webhook.Secret), body, time.Now())
 
 	resp, err := a.client.Do(req)
 	if err != nil {

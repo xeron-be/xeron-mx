@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/xeron-be/xeron-mx/internal/proxy"
 )
 
 type Config struct {
@@ -87,8 +89,6 @@ type ClusterConfig struct {
 
 	Role string `yaml:"role"`
 
-	// PrimaryNodeID names the primary node for cluster sync under Kubernetes StatefulSet.
-	// A shared configuration file is given to each node, which determines its role by comparing its node ID.
 	PrimaryNodeID string `yaml:"primary_node_id"`
 
 	AdvertiseURL string `yaml:"advertise_url"`
@@ -126,10 +126,11 @@ type DNSBLConfig struct {
 }
 
 type ClamAVConfig struct {
-	Enabled bool          `yaml:"enabled"`
-	Addr    string        `yaml:"addr"`
-	Timeout time.Duration `yaml:"timeout"`
-	Action  string        `yaml:"action"`
+	Enabled      bool          `yaml:"enabled"`
+	Addr         string        `yaml:"addr"`
+	Timeout      time.Duration `yaml:"timeout"`
+	Action       string        `yaml:"action"`
+	MaxSizeBytes int64         `yaml:"max_size_bytes"`
 }
 
 type OutboundConfig struct {
@@ -204,7 +205,6 @@ type ACMEConfig struct {
 
 	TermsAgreed bool `yaml:"terms_agreed"`
 
-	// RenewBefore sets the certificate renewal window; must be shorter than the CA certificate lifetime.
 	RenewBefore time.Duration `yaml:"renew_before"`
 }
 
@@ -224,6 +224,10 @@ type SMTPConfig struct {
 
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
+
+	SenderAuth bool `yaml:"sender_auth"`
+
+	ProxyProtocolTrusted []string `yaml:"proxy_protocol_trusted"`
 }
 
 type HTTPConfig struct {
@@ -253,7 +257,14 @@ type QueueConfig struct {
 	RetryMax  time.Duration `yaml:"retry_max"`
 
 	DeliveryTimeout time.Duration `yaml:"delivery_timeout"`
+
+	Bounces string `yaml:"bounces"`
 }
+
+const (
+	BouncesAuthenticated = "authenticated"
+	BouncesOff           = "off"
+)
 
 type HealthConfig struct {
 	Interval time.Duration `yaml:"interval"`
@@ -279,6 +290,7 @@ func Default() Config {
 			ReadTimeout:     5 * time.Minute,
 			WriteTimeout:    5 * time.Minute,
 			MaxConnections:  200,
+			SenderAuth:      true,
 		},
 		HTTP: HTTPConfig{
 			Addr:       ":8080",
@@ -296,6 +308,7 @@ func Default() Config {
 			RetryBase:        1 * time.Minute,
 			RetryMax:         2 * time.Hour,
 			DeliveryTimeout:  5 * time.Minute,
+			Bounces:          BouncesAuthenticated,
 		},
 		Health: HealthConfig{
 			Interval:         30 * time.Second,
@@ -314,9 +327,10 @@ func Default() Config {
 			Timeout: 2500 * time.Millisecond,
 		},
 		ClamAV: ClamAVConfig{
-			Addr:    "localhost:3310",
-			Timeout: 10 * time.Second,
-			Action:  "quarantine",
+			Addr:         "localhost:3310",
+			Timeout:      10 * time.Second,
+			Action:       "quarantine",
+			MaxSizeBytes: 25 << 20,
 		},
 		Outbound: OutboundConfig{
 			Addr:            ":587",
@@ -414,6 +428,7 @@ func applyEnv(cfg *Config) {
 	str("XERONMX_SMTP_TLS_CERT", &cfg.SMTP.TLSCert)
 	str("XERONMX_SMTP_TLS_KEY", &cfg.SMTP.TLSKey)
 	num("XERONMX_SMTP_MAX_MESSAGE_BYTES", &cfg.SMTP.MaxMessageBytes)
+	boolean("XERONMX_SMTP_SENDER_AUTH", &cfg.SMTP.SenderAuth)
 	str("XERONMX_HTTP_ADDR", &cfg.HTTP.Addr)
 	str("XERONMX_HTTP_BASE_URL", &cfg.HTTP.BaseURL)
 	str("XERONMX_HTTP_TLS_CERT", &cfg.HTTP.TLSCert)
@@ -423,6 +438,7 @@ func applyEnv(cfg *Config) {
 	num("XERONMX_QUEUE_MIN_FREE_DISK_BYTES", &cfg.Queue.MinFreeDiskBytes)
 	boolean("XERONMX_MAINTENANCE_DRAIN", &cfg.Maintenance.Drain)
 	dur("XERONMX_QUEUE_RETENTION", &cfg.Queue.Retention)
+	str("XERONMX_QUEUE_BOUNCES", &cfg.Queue.Bounces)
 	dur("XERONMX_HEALTH_INTERVAL", &cfg.Health.Interval)
 	str("XERONMX_LOG_LEVEL", &cfg.Log.Level)
 	str("XERONMX_LOG_FORMAT", &cfg.Log.Format)
@@ -444,6 +460,7 @@ func applyEnv(cfg *Config) {
 	str("XERONMX_CLAMAV_ADDR", &cfg.ClamAV.Addr)
 	dur("XERONMX_CLAMAV_TIMEOUT", &cfg.ClamAV.Timeout)
 	str("XERONMX_CLAMAV_ACTION", &cfg.ClamAV.Action)
+	num("XERONMX_CLAMAV_MAX_SIZE_BYTES", &cfg.ClamAV.MaxSizeBytes)
 	boolean("XERONMX_OUTBOUND_ENABLED", &cfg.Outbound.Enabled)
 	boolean("XERONMX_OUTBOUND_REQUIRE_TLS", &cfg.Outbound.RequireTLS)
 	str("XERONMX_OUTBOUND_ADDR", &cfg.Outbound.Addr)
@@ -452,6 +469,9 @@ func applyEnv(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Outbound.MaxConnections = n
 		}
+	}
+	if v, ok := os.LookupEnv("XERONMX_SMTP_PROXY_PROTOCOL_TRUSTED"); ok {
+		cfg.SMTP.ProxyProtocolTrusted = strings.Split(v, ",")
 	}
 	if v, ok := os.LookupEnv("XERONMX_SMTP_MAX_CONNECTIONS"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -565,6 +585,9 @@ func applyEnv(cfg *Config) {
 }
 
 func (c *Config) Validate() error {
+	if _, err := proxy.ParseTrusted(c.SMTP.ProxyProtocolTrusted); err != nil {
+		return fmt.Errorf("smtp.proxy_protocol_trusted: %w", err)
+	}
 	if c.DataDir == "" {
 		return fmt.Errorf("data_dir must not be empty")
 	}
@@ -586,6 +609,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Queue.Retention <= 0 {
 		return fmt.Errorf("queue.retention must be positive")
+	}
+	if c.Queue.Bounces != BouncesAuthenticated && c.Queue.Bounces != BouncesOff {
+		return fmt.Errorf("queue.bounces must be %q or %q", BouncesAuthenticated, BouncesOff)
+	}
+	if c.Queue.Bounces == BouncesAuthenticated && !c.SMTP.SenderAuth {
+		return fmt.Errorf("queue.bounces: %q needs smtp.sender_auth, which is what decides who is authenticated", BouncesAuthenticated)
 	}
 	if c.Queue.MinFreeDiskBytes < 0 {
 		return fmt.Errorf("queue.min_free_disk_bytes must not be negative (0 to disable)")
@@ -669,6 +698,9 @@ func (c *Config) Validate() error {
 		case "quarantine", "reject":
 		default:
 			return fmt.Errorf("clamav.action must be quarantine or reject, got %q", c.ClamAV.Action)
+		}
+		if c.ClamAV.MaxSizeBytes < 0 {
+			return fmt.Errorf("clamav.max_size_bytes must not be negative")
 		}
 	}
 

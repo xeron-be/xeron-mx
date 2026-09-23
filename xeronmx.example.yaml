@@ -37,6 +37,23 @@ smtp:
   tls_cert: ""
   tls_key: ""
 
+  # Check SPF and DKIM for every accepted message. Nothing is refused on the
+  # result: the primary keeps that decision. The result is recorded on the
+  # message, carried to the primary in the ARC seal, and decides whether a
+  # sender can be sent a bounce (see queue.bounces).
+  # Environment: XERONMX_SMTP_SENDER_AUTH
+  sender_auth: true
+
+  # Load balancers that send the PROXY protocol (v1 or v2) in front of ports 25
+  # and 587, as addresses or CIDR ranges. Behind a balancer that proxies the
+  # connection, XeronMX otherwise sees the balancer's address for every sender,
+  # and SPF, blocklists and the Received header all name the wrong host.
+  # Connections from these ranges must start with the header; everyone else is
+  # served as usual, and a header from them is just an invalid command, so it
+  # cannot be used to claim another address. Leave empty unless you have one.
+  # Environment: XERONMX_SMTP_PROXY_PROTOCOL_TRUSTED (comma-separated)
+  proxy_protocol_trusted: []
+
 http:
   addr: ":8080"
   base_url: ""                  # used to build links in notifications
@@ -116,6 +133,20 @@ queue:
   retry_base: 1m
   retry_max: 2h
   delivery_timeout: 5m
+
+  # What happens when a message cannot be delivered (a recipient refused by the
+  # primary, the whole message refused, or the retention above running out).
+  #   authenticated  send a delivery status notification to the sender, but
+  #                  only when smtp.sender_auth proved the sender genuine (SPF
+  #                  pass, or a DKIM signature aligned with the sender's
+  #                  domain). A backup MX cannot check recipients while the
+  #                  primary is down, so bouncing everyone would send
+  #                  notifications to the forged senders of spam.
+  #   off            never; the failure is only on the timeline and in alerts.
+  # Bounces go out through the outbound module when it is enabled, and
+  # straight to the sender's MX otherwise.
+  # Environment: XERONMX_QUEUE_BOUNCES
+  bounces: authenticated
 
 health:
   # How the primary is probed. This is a real SMTP handshake, not a TCP connect:
@@ -241,8 +272,11 @@ alerts:
     # POSTs the alert as JSON. Slack, Discord, ntfy, or your own endpoint.
     # Environment: XERONMX_ALERTS_WEBHOOK_URL
     url: ""
-    # Signs the body with HMAC-SHA256 in the X-XeronMX-Signature header, so the
-    # receiver can tell a real alert from anyone who found the URL.
+    # Signs each alert, so the receiver can tell a real one from anyone who
+    # found the URL: X-XeronMX-Signature is sha256=<hex HMAC-SHA256 of
+    # "<X-XeronMX-Timestamp>.<body>">. Reject a timestamp more than five
+    # minutes away from your clock, or a captured request can be replayed.
+    # Event webhooks (Settings in the panel) are signed the same way.
     secret: ""
     timeout: 10s
 

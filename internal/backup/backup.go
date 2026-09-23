@@ -34,8 +34,6 @@ func New(cfg config.BackupConfig, dir string, db *store.DB, log *slog.Logger) *R
 	return &Runner{cfg: cfg, dir: dir, db: db, log: log}
 }
 
-func (r *Runner) Enabled() bool { return r.cfg.Enabled }
-
 func (r *Runner) Run(ctx context.Context) {
 	if !r.cfg.Enabled {
 		return
@@ -45,6 +43,12 @@ func (r *Runner) Run(ctx context.Context) {
 		interval = 24 * time.Hour
 	}
 	r.log.Info("automatic backups enabled", "dir", r.dir, "interval", interval.String(), "keep", r.cfg.Keep)
+
+	if newest, ok := r.newest(); !ok || time.Since(newest) >= interval {
+		if _, err := r.Once(ctx); err != nil {
+			r.log.Error("backup failed", "error", err)
+		}
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -94,6 +98,24 @@ func (r *Runner) Once(ctx context.Context) (string, error) {
 		r.log.Warn("could not prune old backups", "error", err)
 	}
 	return path, nil
+}
+
+func (r *Runner) newest() (time.Time, bool) {
+	entries, err := os.ReadDir(r.dir)
+	if err != nil {
+		return time.Time{}, false
+	}
+	var latest time.Time
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasPrefix(n, filePrefix) || !strings.HasSuffix(n, fileSuffix) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return latest, !latest.IsZero()
 }
 
 func (r *Runner) note(ok bool) {

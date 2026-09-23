@@ -136,6 +136,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/domains", s.authed(s.handleListDomains))
 	mux.HandleFunc("GET /api/v1/domains/{id}", s.authed(s.handleGetDomain))
 	mux.HandleFunc("GET /api/v1/domains/{id}/dns", s.authed(s.handleDomainDNS))
+	mux.HandleFunc("GET /api/v1/domains/{id}/recipients", s.authed(s.handleGetRecipients))
+	mux.HandleFunc("PUT /api/v1/domains/{id}/recipients", s.admin(s.handleSetRecipients))
 	mux.HandleFunc("GET /api/v1/queue", s.authed(s.handleListQueue))
 	mux.HandleFunc("GET /api/v1/queue/{id}", s.authed(s.handleGetMessage))
 	mux.HandleFunc("GET /api/v1/events", s.authed(s.handleListEvents))

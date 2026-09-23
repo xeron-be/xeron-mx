@@ -195,3 +195,27 @@ func firstHeader(msg string) string {
 	}
 	return msg
 }
+
+func TestTheSignatureCoversWhatAReplayCouldChange(t *testing.T) {
+	key, err := Generate("sel", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := NewSigner("example.com", "sel", key.PrivatePEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := "From: a@example.com\r\nTo: b@example.net\r\nSubject: hi\r\n" +
+		"Content-Type: text/plain\r\n\r\nbody\r\n"
+	var out bytes.Buffer
+	if err := signer.Sign(&out, strings.NewReader(msg)); err != nil {
+		t.Fatal(err)
+	}
+	head := out.String()[:strings.Index(out.String(), "From: a@example.com")]
+	h := strings.ToLower(strings.Join(strings.Fields(head), ""))
+	for _, name := range []string{"reply-to", "cc", "content-type", "content-transfer-encoding", "message-id"} {
+		if !strings.Contains(h, name) {
+			t.Errorf("the signature does not cover %s, so a replay could add or change it", name)
+		}
+	}
+}

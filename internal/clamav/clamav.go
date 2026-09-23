@@ -20,6 +20,7 @@ type Scanner struct {
 	target  string
 	timeout time.Duration
 	action  string
+	maxSize int64
 }
 
 type Result struct {
@@ -56,8 +57,11 @@ func New(cfg config.ClamAVConfig) *Scanner {
 		target:  target,
 		timeout: timeout,
 		action:  action,
+		maxSize: cfg.MaxSizeBytes,
 	}
 }
+
+func (s *Scanner) MaxSize() int64 { return s.maxSize }
 
 func (s *Scanner) Enabled() bool {
 	return s.enabled

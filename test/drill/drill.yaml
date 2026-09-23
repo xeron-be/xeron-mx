@@ -1,0 +1,20 @@
+data_dir: /var/lib/xeronmx
+smtp:
+  addr: ":25"
+  hostname: backup.example.test
+  sender_auth: false
+http:
+  addr: ":8080"
+queue:
+  retry_base: 1s
+  retry_max: 5s
+  bounces: "off"
+  min_free_disk_bytes: 0
+health:
+  interval: 2s
+  timeout: 2s
+  failure_threshold: 1
+  success_threshold: 1
+log:
+  level: info
+  format: text

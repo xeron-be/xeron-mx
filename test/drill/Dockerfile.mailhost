@@ -1,0 +1,11 @@
+FROM debian:trixie-slim
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postfix \
+ && rm -rf /var/lib/apt/lists/* \
+ && postconf -e "myhostname=mailhost.example.test" "mydestination=example.test, localhost" \
+      "home_mailbox=Maildir/" "inet_protocols=ipv4" "maillog_file=/dev/stdout" \
+      "smtpd_tls_security_level=none" "message_size_limit=52428800" \
+ && useradd -m alice && useradd -m bob \
+ && newaliases
+EXPOSE 25
+CMD ["postfix", "start-fg"]

@@ -24,8 +24,6 @@ func TestNewIDIsUniqueHex(t *testing.T) {
 	}
 }
 
-// The peeked bytes must not be lost: the reader handed back has to replay the
-// whole message, or every spooled body would be missing its headers.
 func TestPeekHeadersReplaysTheWholeStream(t *testing.T) {
 	msg := "Subject: hello\r\n\r\n" + strings.Repeat("body line\r\n", 1000)
 
@@ -89,9 +87,6 @@ func TestExtractSubjectIsBoundedAndValidUTF8(t *testing.T) {
 		t.Fatalf("subject is %d bytes; want it cut at 500", len(got))
 	}
 
-	// Cutting at 500 bytes can land inside a multibyte character, and a raw
-	// 8-bit header can carry anything. Either would break the JSON the API
-	// renders the subject into.
 	accented := "Subject: " + strings.Repeat("é", 400) + "\r\n\r\n"
 	if got := ExtractSubject([]byte(accented)); !utf8.ValidString(got) {
 		t.Fatal("subject cut inside a multibyte character is not valid UTF-8")

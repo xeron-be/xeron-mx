@@ -1,0 +1,1 @@
+ALTER TABLE queue ADD COLUMN malware_scan TEXT NOT NULL DEFAULT '';

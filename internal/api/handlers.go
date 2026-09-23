@@ -474,7 +474,7 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 		Type: "domain_added", DomainID: &id, UserID: &userFrom(r).ID,
 		Data: map[string]any{"name": d.Name, "primary_host": d.PrimaryHost},
 	})
-	s.ok(w, http.StatusCreated, s.domainJSON(r.Context(), d))
+	s.ok(w, http.StatusCreated, s.domainJSON(r.Context(), s.reloadDomain(r.Context(), d)))
 }
 
 func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
@@ -498,7 +498,14 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, ErrDomainUpdateFailed)
 		return
 	}
-	s.ok(w, http.StatusOK, s.domainJSON(r.Context(), d))
+	s.ok(w, http.StatusOK, s.domainJSON(r.Context(), s.reloadDomain(r.Context(), d)))
+}
+
+func (s *Server) reloadDomain(ctx context.Context, d *store.Domain) *store.Domain {
+	if fresh, err := s.db.DomainByID(ctx, d.ID); err == nil {
+		return fresh
+	}
+	return d
 }
 
 func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
@@ -748,6 +755,9 @@ func (s *Server) domainJSON(ctx context.Context, d *store.Domain) map[string]any
 	if n, err := s.db.CountPendingForDomain(ctx, d.ID); err == nil {
 		out["pending"] = n
 	}
+	if list, err := s.db.DomainRecipients(ctx, d.ID); err == nil {
+		out["recipients_count"] = len(list)
+	}
 	return out
 }
 
@@ -928,6 +938,8 @@ func messageJSON(m *store.Message) map[string]any {
 		"direction": m.Direction, "spam_action": m.SpamAction,
 		"spam_score":     m.SpamScore,
 		"quarantined_at": m.QuarantinedAt, "quarantine_reason": m.QuarantineReason,
+		"auth_results": m.AuthResults, "sender_authenticated": m.SenderAuthenticated,
+		"malware_scan": m.MalwareScan,
 	}
 }
 
