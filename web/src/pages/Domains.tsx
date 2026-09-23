@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, type DKIMCheckResult, type DKIMInfo, type DMARCDNSCheck, type DMARCInfo, type DnsGuide, type Domain, type ProbeResult } from "../api";
 import { relative } from "../format";
 import { Alert, Card, Empty, PageHead, Pill } from "../components/ui";
@@ -189,6 +189,7 @@ function DomainCard({
     const [showDmarc, setShowDmarc] = useState(false);
     const [dmarc, setDmarc] = useState<DMARCInfo | null>(null);
     const [dmarcLoading, setDmarcLoading] = useState(false);
+    const [showRecipients, setShowRecipients] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
 
@@ -311,6 +312,9 @@ function DomainCard({
                     <button className="btn-sm" onClick={toggleDmarc}>
                         {t("domains.dmarc")}
                     </button>
+                    <button className="btn-sm" onClick={() => setShowRecipients(!showRecipients)}>
+                        {t("domains.recipients")}
+                    </button>
                     {canTest && (
                         <button className="btn-sm" onClick={runProbe} disabled={busy}>
                             {busy ? t("domains.testing") : t("domains.testConnection")}
@@ -402,6 +406,8 @@ function DomainCard({
                 />
             )}
 
+            {showRecipients && <RecipientsSection domain={domain} canEdit={canEdit} onChanged={onChanged} />}
+
             {showDmarc && (
                 <DMARCSection
                     domain={domain}
@@ -413,6 +419,95 @@ function DomainCard({
                 />
             )}
         </Card>
+    );
+}
+
+function RecipientsSection({
+    domain,
+    canEdit,
+    onChanged,
+}: {
+    domain: Domain;
+    canEdit: boolean;
+    onChanged: () => void;
+}) {
+    const t = useT();
+    const [text, setText] = useState("");
+    const [loaded, setLoaded] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const [saved, setSaved] = useState<number | null>(null);
+
+    useEffect(() => {
+        let live = true;
+        api.getRecipients(domain.id)
+            .then((res) => {
+                if (!live) return;
+                setText(res.recipients.join("\n"));
+                setLoaded(true);
+            })
+            .catch((err) => live && setError(err instanceof Error ? err.message : t("domains.couldNotLoadRecipients")));
+        return () => {
+            live = false;
+        };
+    }, [domain.id]);
+
+    const addresses = text
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+    async function save(e: FormEvent) {
+        e.preventDefault();
+        setBusy(true);
+        setError("");
+        setSaved(null);
+        try {
+            const res = await api.setRecipients(domain.id, addresses);
+            setText(res.recipients.join("\n"));
+            setSaved(res.recipients.length);
+            onChanged();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : t("domains.couldNotSaveRecipients"));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    const count = addresses.length;
+
+    return (
+        <div>
+            <h3 style={{ margin: "0 0 .4rem" }}>
+                {t("domains.recipients")}{" "}
+                <Pill tone={count > 0 ? "ok" : "mute"}>
+                    {count > 0 ? t("domains.recipientsCount", { n: count }) : t("domains.recipientsAll")}
+                </Pill>
+            </h3>
+            <p style={{ fontSize: ".9rem", margin: "0 0 .6rem" }}>
+                {t("domains.recipientsHint", { domain: domain.name })}
+            </p>
+            {error && <Alert>{error}</Alert>}
+            {saved !== null && <Alert tone="ok">{t("domains.recipientsSaved", { n: saved })}</Alert>}
+            {loaded && (
+                <form onSubmit={save}>
+                    <textarea
+                        className="mono"
+                        rows={Math.min(Math.max(count + 1, 4), 16)}
+                        value={text}
+                        onChange={(e) => setText(e.target.value)}
+                        readOnly={!canEdit}
+                        placeholder={`alice@${domain.name}\nbob@${domain.name}`}
+                        spellCheck={false}
+                    />
+                    {canEdit && (
+                        <button className="btn-sm" type="submit" disabled={busy} style={{ marginTop: ".5rem" }}>
+                            {t("domains.recipientsSave")}
+                        </button>
+                    )}
+                </form>
+            )}
+        </div>
     );
 }
 

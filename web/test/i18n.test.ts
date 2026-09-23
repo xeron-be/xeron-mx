@@ -19,8 +19,6 @@ describe("catalogues", () => {
         expect(Object.keys(catalogs).sort()).toEqual(LANGUAGES.map((l) => l.code).sort());
     });
 
-    // The compiler checks the keys; it cannot check what is inside the
-    // strings. A translation that drops {n} renders "{n}m" as a bare "m".
     for (const [lang, catalog] of Object.entries(catalogs)) {
         it(`${lang} keeps every placeholder the English string has`, () => {
             const wrong = keys.filter(
@@ -63,9 +61,6 @@ describe("translateApiError", () => {
         expect(translateApiError(undefined)).toBe("");
     });
 
-    // A code with no message is shown to the operator as a bare identifier.
-    // This is how `cannot_remove_last_admin` went unnoticed: its message was
-    // filed under a different key.
     it("has a message for every error code the API can return", () => {
         const codes = apiErrorCodes();
         expect(codes.length).toBeGreaterThan(50);

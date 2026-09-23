@@ -3,8 +3,15 @@ package smtpclient
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"strconv"
 	"strings"
@@ -15,15 +22,14 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
 
-// fakePrimary is just enough of an SMTP server to exercise the TLS decisions
-// Dial makes. It never completes a TLS handshake: STARTTLS is either not
-// offered or refused with 454, which is what a primary with a broken or
-// missing certificate does.
 type fakePrimary struct {
 	addr string
 
 	offerSTARTTLS bool
-	silent        bool // accept the connection and never greet
+	silent        bool
+
+	cert              *tls.Certificate
+	dropAfterSTARTTLS bool
 
 	mu   sync.Mutex
 	ehlo []string
@@ -88,7 +94,20 @@ func (p *fakePrimary) serve(c net.Conn) {
 				fmt.Fprint(c, "250-fake.primary\r\n250 PIPELINING\r\n")
 			}
 		case "STARTTLS":
-			fmt.Fprint(c, "454 4.7.0 TLS not available\r\n")
+			switch {
+			case p.cert != nil:
+				fmt.Fprint(c, "220 2.0.0 ready\r\n")
+				tc := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{*p.cert}})
+				if tc.Handshake() != nil {
+					return
+				}
+				c, r = tc, bufio.NewReader(tc)
+			case p.dropAfterSTARTTLS:
+				fmt.Fprint(c, "220 2.0.0 ready\r\n")
+				return
+			default:
+				fmt.Fprint(c, "454 4.7.0 TLS not available\r\n")
+			}
 		case "QUIT":
 			fmt.Fprint(c, "221 2.0.0 bye\r\n")
 			return
@@ -119,17 +138,46 @@ func (p *fakePrimary) domain(t *testing.T, mode string) *store.Domain {
 
 func dial(t *testing.T, d *store.Domain) error {
 	t.Helper()
+	encrypted, err := dialState(t, d)
+	if encrypted {
+		t.Error("the connection reports TLS, but the fake primary cannot do TLS")
+	}
+	return err
+}
+
+func dialState(t *testing.T, d *store.Domain) (encrypted bool, err error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	client, err := Dial(ctx, d, HelloName(d))
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer client.Close()
-	if _, isTLS := client.TLSConnectionState(); isTLS {
-		t.Error("the connection reports TLS, but the fake primary cannot do TLS")
+	_, encrypted = client.TLSConnectionState()
+	return encrypted, client.Quit()
+}
+
+func selfSigned(t *testing.T) *tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return client.Quit()
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "fake.primary"},
+		DNSNames:     []string{"fake.primary"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
 func TestNoneNeverAttemptsSTARTTLS(t *testing.T) {
@@ -164,9 +212,40 @@ func TestOpportunisticDeliversInPlaintextWhenSTARTTLSFails(t *testing.T) {
 	}
 }
 
-// An empty mode is what a domain created before `primary_tls` existed carries.
-// It has to behave as opportunistic: treating it as strict would silently stop
-// delivery to every primary without STARTTLS.
+func TestOpportunisticEncryptsWithoutVerifyingTheCertificate(t *testing.T) {
+	p := startPrimary(t, &fakePrimary{offerSTARTTLS: true, cert: selfSigned(t)})
+	encrypted, err := dialState(t, p.domain(t, TLSOpportunistic))
+	if err != nil {
+		t.Fatalf("Dial(opportunistic) against a self-signed primary = %v; want the mail delivered", err)
+	}
+	if !encrypted {
+		t.Fatal("the session fell back to plaintext; want TLS without verification, like Postfix's may level")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.ehlo) != 2 || p.ehlo[1] != "xeronmx.example.com" {
+		t.Fatalf("EHLO sequence = %q; want the domain's hello name after STARTTLS", p.ehlo)
+	}
+}
+
+func TestOpportunisticDeliversInPlaintextWhenTheHandshakeFails(t *testing.T) {
+	p := startPrimary(t, &fakePrimary{offerSTARTTLS: true, dropAfterSTARTTLS: true})
+	if err := dial(t, p.domain(t, TLSOpportunistic)); err != nil {
+		t.Fatalf("Dial(opportunistic) = %v; want the plaintext fallback", err)
+	}
+	if got := p.lastEHLO(); got != "xeronmx.example.com" {
+		t.Fatalf("session identified itself as %q; want xeronmx.example.com", got)
+	}
+}
+
+func TestStrictSTARTTLSRefusesAnUnverifiableCertificate(t *testing.T) {
+	p := startPrimary(t, &fakePrimary{offerSTARTTLS: true, cert: selfSigned(t)})
+	_, err := dialState(t, p.domain(t, TLSRequired))
+	if err == nil || !strings.Contains(err.Error(), "STARTTLS") {
+		t.Fatalf("Dial(starttls) against a self-signed primary = %v; want a STARTTLS error", err)
+	}
+}
+
 func TestEmptyModeIsOpportunistic(t *testing.T) {
 	p := startPrimary(t, &fakePrimary{offerSTARTTLS: false})
 	if err := dial(t, p.domain(t, "")); err != nil {
@@ -208,10 +287,6 @@ func TestUnreachablePrimary(t *testing.T) {
 	}
 }
 
-// A primary that accepts the connection and then says nothing (overloaded, or
-// a tarpit) must not hold the caller past its context. go-smtp sets its own
-// five-minute deadline on every command, so a deadline set on the connection
-// beforehand is not enough on its own.
 func TestDialHonoursTheContextWhenThePrimaryStalls(t *testing.T) {
 	for _, mode := range []string{TLSNone, TLSOpportunistic, TLSRequired} {
 		t.Run(mode, func(t *testing.T) {
@@ -228,7 +303,6 @@ func TestDialHonoursTheContextWhenThePrimaryStalls(t *testing.T) {
 			if elapsed := time.Since(start); elapsed > 3*time.Second {
 				t.Fatalf("Dial returned after %v; want it bounded by the 300ms context", elapsed)
 			}
-			// This string ends up as the primary's last error in the panel.
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("Dial error = %v; want it to name the expired deadline", err)
 			}

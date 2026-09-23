@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"sort"
@@ -223,8 +224,65 @@ func cmdDomains(ctx context.Context, c *Client, args []string) error {
 		}
 		return nil
 
+	case "recipients":
+		fs := flag.NewFlagSet("domains recipients", flag.ContinueOnError)
+		file := fs.String("file", "", "replace the list with the addresses in this file, one per line (- for stdin)")
+		clear := fs.Bool("clear", false, "remove the list, so that every address is accepted again")
+		args, err := parseMixed(fs, rest)
+		if err != nil {
+			return err
+		}
+		if len(args) != 1 || (*file != "" && *clear) {
+			return errors.New("usage: xeronmxctl domains recipients <id> [--file <path|-> | --clear]")
+		}
+		path := "/api/v1/domains/" + args[0] + "/recipients"
+
+		var body struct {
+			Recipients []string `json:"recipients"`
+		}
+		switch {
+		case *clear:
+			err = c.put(ctx, path, map[string]any{"recipients": []string{}}, &body)
+		case *file != "":
+			var raw []byte
+			if *file == "-" {
+				raw, err = io.ReadAll(os.Stdin)
+			} else {
+				raw, err = os.ReadFile(*file)
+			}
+			if err != nil {
+				return err
+			}
+			var list []string
+			for _, line := range strings.Split(string(raw), "\n") {
+				if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+					list = append(list, line)
+				}
+			}
+			err = c.put(ctx, path, map[string]any{"recipients": list}, &body)
+		default:
+			err = c.get(ctx, path, &body)
+		}
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return emit(body.Recipients)
+		}
+		if len(body.Recipients) == 0 {
+			note("No list: every address in the domain is accepted.")
+			return nil
+		}
+		for _, r := range body.Recipients {
+			fmt.Println(r)
+		}
+		if *file != "" {
+			note("%d addresses; any other is refused with 550 5.1.1.", len(body.Recipients))
+		}
+		return nil
+
 	default:
-		return fmt.Errorf("unknown subcommand %q (try list, add, rm, test)", sub)
+		return fmt.Errorf("unknown subcommand %q (try list, add, rm, test, recipients)", sub)
 	}
 }
 

@@ -187,6 +187,8 @@ func TestEveryProtectedRouteRefusesAnonymous(t *testing.T) {
 		{"DELETE", "/api/v1/smtp-users/1"},
 		{"GET", "/api/v1/domains/1/dmarc"},
 		{"POST", "/api/v1/domains/1/dmarc/check"},
+		{"GET", "/api/v1/domains/1/recipients"},
+		{"PUT", "/api/v1/domains/1/recipients"},
 	}
 	for _, rt := range routes {
 		rec := a.do(t, rt.method, rt.path, nil, nil)
@@ -792,4 +794,43 @@ func TestDMARCEndpoints(t *testing.T) {
 	if recCheck.Code != http.StatusOK {
 		t.Fatalf("POST /dmarc/check returned %d", recCheck.Code)
 	}
+}
+
+func TestDomainAndDKIMResponsesCarryTheStoredCreationDate(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := a.setup(t)
+
+	created := func(t *testing.T, body map[string]any) string {
+		t.Helper()
+		v, _ := body["created_at"].(string)
+		if v == "" || strings.HasPrefix(v, "0001-01-01") {
+			t.Fatalf("created_at = %v; want the stored creation time", body["created_at"])
+		}
+		return v
+	}
+
+	rec := a.do(t, "POST", "/api/v1/domains", map[string]any{
+		"name": "example.com", "primary_host": "mail.example.com",
+	}, cookie)
+	body := decodeBody(t, rec)
+	first := created(t, body)
+	id := itoa(int64(body["id"].(float64)))
+
+	rec = a.do(t, "PATCH", "/api/v1/domains/"+id, map[string]any{"primary_host": "mx.example.com"}, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH returned %d: %s", rec.Code, rec.Body.String())
+	}
+	body = decodeBody(t, rec)
+	if got := created(t, body); got != first {
+		t.Fatalf("created_at changed on update: %s -> %s", first, got)
+	}
+	if body["primary_host"] != "mx.example.com" {
+		t.Fatalf("primary_host = %v", body["primary_host"])
+	}
+
+	rec = a.do(t, "POST", "/api/v1/domains/"+id+"/dkim", map[string]any{}, cookie)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST dkim returned %d: %s", rec.Code, rec.Body.String())
+	}
+	created(t, decodeBody(t, rec))
 }

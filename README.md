@@ -140,9 +140,11 @@ In drain mode, inbound intake rejects new connections with:
 ```
 Upstream servers immediately fail over to alternate secondary MX nodes or defer. Meanwhile, background delivery workers continue flushing queued messages to the primary until the spool reaches zero.
 
+Drain mode set from the panel, the API or the CLI lasts until the process restarts, deliberately: the usual sequence is drain, stop, update, start, and a backup MX that silently kept refusing mail after that would be worse than one that resumes. To keep a node drained across restarts, set `maintenance.drain: true` (or `XERONMX_MAINTENANCE_DRAIN=true`).
+
 ### Inbound Perimeter Protection (DNSBL & ClamAV)
 - **DNSBL IP Reputation**: Real-time concurrent checks against configurable blocklists (such as `zen.spamhaus.org` and `bl.spamcop.net`). Listed IPs are rejected at connection with `554 5.7.1` before accepting message data. Private RFC 1918 and loopback addresses are automatically bypassed.
-- **ClamAV Streaming Antivirus**: Scans incoming message bodies via `zINSTREAM` over TCP or UNIX sockets. Detected threats can be quarantined or rejected. The scanner fails open if ClamAV is temporarily offline.
+- **ClamAV Streaming Antivirus**: Scans incoming message bodies via `zINSTREAM` over TCP or UNIX sockets. Detected threats can be quarantined or rejected. The scanner fails open if ClamAV is temporarily offline, and messages larger than `clamav.max_size_bytes` (25 MiB by default, clamd's own `StreamMaxLength`) are not sent to it. Every message records the outcome (`clean`, `infected: <name>`, `skipped: larger than ...`, `failed: ...`), shown in the message detail in the panel and on the timeline, so an unscanned message is never mistaken for a clean one. Raise both limits together to scan everything.
 
 ### Authenticated Outbound Submission (Port 587)
 For environments where the primary server can receive but cannot send directly (for example, residential IP blocks or untrusted subnets), XeronMX accepts authenticated SMTP submissions:
@@ -152,9 +154,40 @@ For environments where the primary server can receive but cannot send directly (
 - Direct delivery via recipient MX lookup or forwarding through an upstream smarthost.
 
 ### Cryptographic Signatures: DKIM & ARC
-- **DKIM Signing**: Generates and manages RSA-2048 and ed25519 signing keys per domain. Private keys are sealed with the master key. Signatures cover standard RFC 5322 headers with relaxed canonicalization, verified in production against Google Gmail and Microsoft Outlook (`dkim=pass`).
-- **ARC (Authenticated Received Chain, RFC 8617)**: Automatically attaches `ARC-Seal`, `ARC-Message-Signature`, and `ARC-Authentication-Results` when forwarding mail to your primary server, preserving SPF and DKIM validation results across hops.
+- **DKIM Signing**: Generates and manages RSA-2048 and ed25519 signing keys per domain. Private keys are sealed with the master key. Signatures cover From, Reply-To, Subject, Date, To, Cc, Message-ID, In-Reply-To, References, MIME-Version, Content-Type and Content-Transfer-Encoding with relaxed canonicalization, and were verified end to end with dkimpy through a Postfix relay.
+- **ARC (Authenticated Received Chain, RFC 8617)**: Attaches `ARC-Seal`, `ARC-Message-Signature`, and `ARC-Authentication-Results` when forwarding mail to your primary server, carrying the SPF and DKIM results XeronMX checked when it received the message. Nothing is claimed that was not checked: with `smtp.sender_auth` off the seal records `none`. A message that already carries an ARC chain (Gmail and Microsoft 365 add one to everything they send) has that chain validated when it arrives, and the new set states the result (`cv=pass` or `cv=fail`); a chain that was already marked failed is not extended. Every accepted message also gets a `Received:` header naming the host that sent it, so the primary's own filters see the original hop.
 - **DMARC Compliance Helper**: Queries live DNS records over HTTPS (Google and Cloudflare DoH) to evaluate alignment and recommend publication tags (`p=quarantine` or `p=reject`).
+
+### Sender Authentication, Bounces & Known Recipients
+- **SPF and DKIM at intake**: every accepted message is checked (`smtp.sender_auth`, on by default). The check never refuses mail, it records who the sender really is.
+- **Bounces only to real senders**: when a recipient or a message is refused by the primary, or a message outlives its retention, XeronMX sends a standard delivery status notification (RFC 3464), but only when the sender was authenticated (SPF pass, or a DKIM signature aligned with the sender's domain). Forged senders of spam get nothing, so the backup MX never becomes a source of backscatter. Set `queue.bounces: off` to disable.
+- **How bounces leave**: straight to the sender's MX when the outbound module is off (port 25 must be open outbound, with a PTR and an SPF record for `smtp.hostname`), through the configured relay otherwise. Bounces use the null sender `<>`; a relay that refuses it (Amazon SES does) gets the bounce from `MAILER-DAEMON@<smtp.hostname>` instead, so verify that domain with the relay. Tested end to end through SES: the bounce reached the inbox at Gmail and at Outlook.com with SPF, DKIM and DMARC passing (Microsoft's spam score 1), and Outlook displayed it as a native non-delivery report, reading the reporting host, the recipient and the `5.1.1` status from the machine-readable part. SES also replaces the `Message-ID` header, which breaks XeronMX's own DKIM signature on everything sent through it; with SES, publish SES's Easy DKIM records for your domain so its signature carries DMARC.
+- **Known recipients (optional, per domain)**: give a domain its list of valid addresses and any other address is refused at `RCPT TO` with `550 5.1.1`, so the sender is told at once instead of by a bounce. An empty list accepts every address. Managed from the panel, the API, `xeronmxctl domains recipients` or the YAML configuration.
+
+### Behind a Load Balancer (PROXY Protocol)
+A load balancer that proxies connections (AWS Classic ELB, an NLB with proxy protocol, HAProxy, Envoy, Kubernetes ingress controllers for TCP) hides every sender behind its own address, and SPF, blocklists, per-source limits and the `Received:` header then all see the balancer. List the balancer's addresses in `smtp.proxy_protocol_trusted` and turn on the PROXY protocol (v1 or v2) on its side: XeronMX then reads each sender's real address from the header, on ports 25 and 587. Only the listed ranges may send the header, and they must; anyone else is served normally and cannot use one to claim another address. Tested behind HAProxy with both versions.
+
+### Setting Up the Primary to Receive from XeronMX
+Mail held by XeronMX reaches your primary from XeronMX's address, not the original sender's, so the sender's SPF fails there unless the primary knows XeronMX is a relay it trusts. XeronMX gives it what it needs: a `Received:` header naming the original sending host and address, and an ARC seal carrying the SPF, DKIM and ARC results checked when the message arrived. Some ways to use them:
+- **Never** add XeronMX's address to the primary's list of networks allowed to relay (`mynetworks` in Postfix): that lets it send anywhere through your primary. Trust it for filtering only.
+- **SpamAssassin** (and filters built on it): list XeronMX in `trusted_networks` and `internal_networks`, so SPF and DNS blocklists are evaluated against the host before it, read from the `Received:` header.
+- **Microsoft 365 / Exchange Online**: add XeronMX's host name as a trusted ARC sealer, or turn on Enhanced Filtering for the inbound connector and skip XeronMX's address.
+- **rspamd** (Mailcow and similar): treat XeronMX as a trusted relay or trust its ARC seal; check your version's documentation for the exact setting.
+- DKIM signatures survive the extra hop unchanged, so DMARC passes on DKIM alone for senders that sign, which is most of them.
+
+### Verifying Webhooks and Alerts
+Event webhooks and the alert webhook are signed the same way when a secret is set. Each request carries `X-XeronMX-Timestamp` (Unix seconds) and `X-XeronMX-Signature: sha256=<hex>`, the HMAC-SHA256 of the timestamp, a dot, and the raw body. Check both, and reject anything more than five minutes old, so a captured request cannot be replayed later. Event webhooks also carry `X-XeronMX-Delivery`, to drop the duplicates that retries can produce.
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: bytes, headers, body: bytes) -> bool:
+    ts = headers["X-XeronMX-Timestamp"]
+    if abs(time.time() - int(ts)) > 300:
+        return False
+    expected = "sha256=" + hmac.new(secret, ts.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, headers["X-XeronMX-Signature"])
+```
 
 ### Multi-Tenancy & Domain-Scoped RBAC
 - Roles: `admin` (full system control), `operator` (queue inspection, retries, quarantine release, domain connectivity tests), and `viewer` (read-only telemetry).
@@ -180,6 +213,9 @@ xeronmxctl status
 # Inspect and manage queue:
 xeronmxctl queue list --status queued --limit 20
 xeronmxctl queue retry 01J8Z...
+
+# Replace a domain's known recipients (one address per line):
+xeronmxctl domains recipients 1 --file recipients.txt
 
 # Trigger graceful maintenance drain:
 xeronmxctl drain --wait
@@ -257,7 +293,7 @@ log:
 
 ## Kubernetes Helm Chart
 
-A production-ready Helm chart is available in `deploy/helm/xeronmx`:
+A Helm chart is available in `deploy/helm/xeronmx`. It is **beta**: rendered and checked in CI, not yet run behind a real cloud `LoadBalancer` (see the chart's README).
 
 ```bash
 helm install xeronmx ./deploy/helm/xeronmx \

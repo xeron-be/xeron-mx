@@ -18,14 +18,11 @@ function matches(sources: string[], pattern: RegExp): string[] {
     return [...found].sort();
 }
 
-// Every error code the API can answer with, from internal/api/codes.go.
 export function apiErrorCodes(): string[] {
     const src = readFileSync(join(internal, "api", "codes.go"), "utf8");
     return matches([src], /^\s*Err\w+\s*=\s*"([a-z0-9_]+)"/gm);
 }
 
-// Every event type the daemon writes to the timeline: the named constants in
-// the store, and the handful recorded with a literal type.
 export function eventTypes(): string[] {
     const sources = goSources();
     return [

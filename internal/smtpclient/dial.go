@@ -48,8 +48,6 @@ func Dial(ctx context.Context, d *store.Domain, helloName string) (*smtp.Client,
 		if deadline, ok := ctx.Deadline(); ok {
 			conn.SetDeadline(deadline)
 		}
-		// go-smtp replaces the deadline above with its own five-minute one on
-		// every command, so the context is enforced by closing the connection.
 		context.AfterFunc(ctx, func() { conn.Close() })
 		return conn, nil
 	}
@@ -67,20 +65,22 @@ func Dial(ctx context.Context, d *store.Domain, helloName string) (*smtp.Client,
 	var client *smtp.Client
 	switch mode {
 	case TLSRequired, TLSOpportunistic:
-
-		client, err = smtp.NewClientStartTLS(conn, tlsConfig)
-		if err != nil {
-
-			if mode == TLSRequired || ctx.Err() != nil {
-				return nil, stageError(ctx, "STARTTLS", err)
-			}
-
-			conn, err = dial(false)
-			if err != nil {
-				return nil, err
-			}
-			client = smtp.NewClient(conn)
+		if mode == TLSOpportunistic {
+			tlsConfig.InsecureSkipVerify = true
 		}
+		client, err = startTLS(conn, tlsConfig, helloName)
+		if err == nil {
+			return client, nil
+		}
+		if mode == TLSRequired || ctx.Err() != nil {
+			return nil, stageError(ctx, "STARTTLS", err)
+		}
+
+		conn, err = dial(false)
+		if err != nil {
+			return nil, err
+		}
+		client = smtp.NewClient(conn)
 	default:
 		client = smtp.NewClient(conn)
 	}
@@ -92,8 +92,18 @@ func Dial(ctx context.Context, d *store.Domain, helloName string) (*smtp.Client,
 	return client, nil
 }
 
-// stageError names the context rather than the "use of closed network
-// connection" left behind when the context closed the connection.
+func startTLS(conn net.Conn, tlsConfig *tls.Config, helloName string) (*smtp.Client, error) {
+	client, err := smtp.NewClientStartTLS(conn, tlsConfig)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Hello(helloName); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
 func stageError(ctx context.Context, stage string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%s: %w", stage, ctxErr)

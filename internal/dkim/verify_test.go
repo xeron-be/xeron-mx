@@ -40,3 +40,17 @@ func TestExtractPublicKey(t *testing.T) {
 		t.Errorf("ExtractPublicKey(empty) = %q, want empty", ExtractPublicKey(recordEmptyP))
 	}
 }
+
+func TestUniqueRecordsMergesTheSameRecordFromEveryResolver(t *testing.T) {
+	google := "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA7nYn"
+	cloudflare := `"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0" "BAQEFAAOCAQ8AMIIBCgKCAQEA7nYn"`
+	got := uniqueRecords([]string{google, cloudflare})
+	if len(got) != 1 || got[0] != google {
+		t.Fatalf("uniqueRecords = %q; want the one record once", got)
+	}
+
+	other := "v=DKIM1; k=rsa; p=OTHER"
+	if got := uniqueRecords([]string{google, other, cloudflare}); len(got) != 2 {
+		t.Fatalf("uniqueRecords = %q; want two distinct records", got)
+	}
+}

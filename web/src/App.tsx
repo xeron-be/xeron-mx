@@ -41,9 +41,6 @@ export function App() {
     const [tab, setTab] = useState<Tab>("overview");
     const [refreshKey, setRefreshKey] = useState(0);
     const [pending, setPending] = useState(0);
-    // The fleet view is only meaningful when peers exist, so the tab appears
-    // only once clustering is switched on. A tab that always says "off" is a
-    // tab that gets ignored, including on the day it stops saying that.
     const [clustered, setClustered] = useState(false);
 
     const refresh = useCallback(() => setRefreshKey((n) => n + 1), []);

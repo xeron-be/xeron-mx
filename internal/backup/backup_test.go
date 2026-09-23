@@ -246,3 +246,36 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 		t.Fatal("Run did not return after the context was cancelled")
 	}
 }
+
+func runFor(t *testing.T, r *Runner, d time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	r.Run(ctx)
+}
+
+func TestAStartWithoutARecentSnapshotTakesOneAtOnce(t *testing.T) {
+	r, _, dir := newRunner(t, config.BackupConfig{Interval: time.Hour, Keep: 7})
+
+	runFor(t, r, 300*time.Millisecond)
+	if n := len(snapshots(t, dir)); n != 1 {
+		t.Fatalf("%d snapshots after a start with none; want one taken at once, not an hour later", n)
+	}
+
+	runFor(t, r, 300*time.Millisecond)
+	if n := len(snapshots(t, dir)); n != 1 {
+		t.Fatalf("%d snapshots after a restart minutes later; want the recent one kept, no new one", n)
+	}
+
+	old := time.Now().Add(-2 * time.Hour)
+	for _, name := range snapshots(t, dir) {
+		if err := os.Chtimes(filepath.Join(dir, name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(1100 * time.Millisecond)
+	runFor(t, r, 300*time.Millisecond)
+	if n := len(snapshots(t, dir)); n != 2 {
+		t.Fatalf("%d snapshots after a restart with a stale one; want a fresh one", n)
+	}
+}

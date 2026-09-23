@@ -29,12 +29,14 @@ func (db *DB) Enqueue(ctx context.Context, m *Message) error {
 		INSERT INTO queue (id, domain_id, envelope_from, envelope_to, subject,
 		                   size_bytes, received_at, expires_at, status,
 		                   attempts, next_retry_at, remote_addr,
-		                   direction, spam_score, spam_action)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?)`,
+		                   direction, spam_score, spam_action,
+		                   auth_results, sender_authenticated, malware_scan)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.DomainID, m.EnvelopeFrom, string(to), m.Subject,
 		m.SizeBytes, formatTime(m.ReceivedAt), formatTime(m.ExpiresAt),
 		formatTime(m.NextRetryAt), m.RemoteAddr,
-		string(direction), m.SpamScore, m.SpamAction)
+		string(direction), m.SpamScore, m.SpamAction,
+		m.AuthResults, boolToInt(m.SenderAuthenticated), m.MalwareScan)
 	if err != nil {
 		return fmt.Errorf("store: enqueue: %w", err)
 	}
@@ -138,7 +140,8 @@ func (db *DB) ClaimBatch(ctx context.Context, workerID string, limit int, now ti
 		RETURNING id, domain_id, envelope_from, envelope_to, subject, size_bytes,
 		          received_at, expires_at, status, attempts, next_retry_at,
 		          last_error, delivered_at, remote_addr, direction,
-		          spam_score, spam_action, quarantined_at, quarantine_reason`,
+		          spam_score, spam_action, quarantined_at, quarantine_reason,
+		          auth_results, sender_authenticated, malware_scan`,
 		formatTime(now), workerID, formatTime(now), limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: claim batch: %w", err)
@@ -148,6 +151,14 @@ func (db *DB) ClaimBatch(ctx context.Context, workerID string, limit int, now ti
 }
 
 func (db *DB) ClaimOutboundBatch(ctx context.Context, workerID string, limit int, now time.Time) ([]*Message, error) {
+	return db.claimOutbound(ctx, workerID, limit, now, false)
+}
+
+func (db *DB) ClaimBounceBatch(ctx context.Context, workerID string, limit int, now time.Time) ([]*Message, error) {
+	return db.claimOutbound(ctx, workerID, limit, now, true)
+}
+
+func (db *DB) claimOutbound(ctx context.Context, workerID string, limit int, now time.Time, bouncesOnly bool) ([]*Message, error) {
 	rows, err := db.QueryContext(ctx, `
 		UPDATE queue
 		SET status = 'delivering', claimed_at = ?, claimed_by = ?
@@ -157,6 +168,7 @@ func (db *DB) ClaimOutboundBatch(ctx context.Context, workerID string, limit int
 			WHERE q.status = 'queued'
 			  AND q.quarantined_at IS NULL
 			  AND q.direction = 'outbound'
+			  AND (? = 0 OR q.envelope_from = '')
 			  AND q.next_retry_at <= ?
 			  AND d.enabled = 1
 			ORDER BY q.next_retry_at
@@ -165,8 +177,9 @@ func (db *DB) ClaimOutboundBatch(ctx context.Context, workerID string, limit int
 		RETURNING id, domain_id, envelope_from, envelope_to, subject, size_bytes,
 		          received_at, expires_at, status, attempts, next_retry_at,
 		          last_error, delivered_at, remote_addr, direction,
-		          spam_score, spam_action, quarantined_at, quarantine_reason`,
-		formatTime(now), workerID, formatTime(now), limit)
+		          spam_score, spam_action, quarantined_at, quarantine_reason,
+		          auth_results, sender_authenticated, malware_scan`,
+		formatTime(now), workerID, boolToInt(bouncesOnly), formatTime(now), limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: claim outbound batch: %w", err)
 	}
@@ -197,6 +210,14 @@ func (db *DB) Reschedule(ctx context.Context, id string, attempts int, reason st
 		SET status = 'queued', attempts = ?, last_error = ?, next_retry_at = ?,
 		    claimed_at = NULL, claimed_by = ''
 		WHERE id = ?`, attempts, truncate(reason, 1000), formatTime(next), id)
+}
+
+func (db *DB) SetRecipients(ctx context.Context, id string, rcpts []string) error {
+	to, err := json.Marshal(rcpts)
+	if err != nil {
+		return fmt.Errorf("store: marshal recipients: %w", err)
+	}
+	return db.exec(ctx, `UPDATE queue SET envelope_to = ? WHERE id = ?`, string(to), id)
 }
 
 func Backoff(attempts int, base, max time.Duration) time.Duration {
@@ -258,7 +279,8 @@ func (db *DB) GetMessage(ctx context.Context, id string) (*Message, error) {
 		SELECT id, domain_id, envelope_from, envelope_to, subject, size_bytes,
 		       received_at, expires_at, status, attempts, next_retry_at,
 		       last_error, delivered_at, remote_addr, direction,
-		       spam_score, spam_action, quarantined_at, quarantine_reason
+		       spam_score, spam_action, quarantined_at, quarantine_reason,
+		          auth_results, sender_authenticated, malware_scan
 		FROM queue WHERE id = ?`, id)
 	if err != nil {
 		return nil, fmt.Errorf("store: get message: %w", err)
@@ -294,7 +316,8 @@ func (db *DB) ListMessages(ctx context.Context, f ListFilter) ([]*Message, error
 		SELECT id, domain_id, envelope_from, envelope_to, subject, size_bytes,
 		       received_at, expires_at, status, attempts, next_retry_at,
 		       last_error, delivered_at, remote_addr, direction,
-		       spam_score, spam_action, quarantined_at, quarantine_reason
+		       spam_score, spam_action, quarantined_at, quarantine_reason,
+		          auth_results, sender_authenticated, malware_scan
 		FROM queue
 		WHERE 1=1`
 
@@ -396,12 +419,14 @@ func scanMessages(rows *sql.Rows) ([]*Message, error) {
 			direction   string
 			spamScore   sql.NullFloat64
 			quarantined sql.NullString
+			senderAuth  int
 		)
 		if err := rows.Scan(&m.ID, &m.DomainID, &m.EnvelopeFrom, &to, &m.Subject,
 			&m.SizeBytes, &received, &expires, &status, &m.Attempts,
 			&nextRetry, &m.LastError, &deliveredAt, &m.RemoteAddr,
 			&direction, &spamScore, &m.SpamAction,
-			&quarantined, &m.QuarantineReason); err != nil {
+			&quarantined, &m.QuarantineReason,
+			&m.AuthResults, &senderAuth, &m.MalwareScan); err != nil {
 			return nil, fmt.Errorf("store: scan message: %w", err)
 		}
 		var qErr error
@@ -409,6 +434,7 @@ func scanMessages(rows *sql.Rows) ([]*Message, error) {
 			return nil, qErr
 		}
 		m.Direction = Direction(direction)
+		m.SenderAuthenticated = senderAuth != 0
 		if spamScore.Valid {
 			score := spamScore.Float64
 			m.SpamScore = &score

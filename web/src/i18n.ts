@@ -23,16 +23,11 @@ function isLang(v: string): v is Lang {
     return LANGUAGES.some((l) => l.code === v);
 }
 
-// The choice lives in the browser rather than on the account: it is a display
-// preference, it needs no schema migration, and a panel is usually run by one
-// person anyway. Storage can throw in a private window, so every access is
-// guarded and simply falls back to detection.
 function detect(): Lang {
     try {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved && isLang(saved)) return saved;
     } catch {
-        /* storage unavailable */
     }
     const offered = navigator.languages?.length ? navigator.languages : [navigator.language];
     for (const tag of offered) {
@@ -55,7 +50,6 @@ export function setLang(lang: Lang): void {
     try {
         localStorage.setItem(STORAGE_KEY, lang);
     } catch {
-        /* storage unavailable; the choice lasts for this page only */
     }
     document.documentElement.lang = lang;
     listeners.forEach((notify) => notify());
@@ -73,8 +67,6 @@ export function useLang(): Lang {
 export type Vars = Record<string, string | number>;
 
 export function translate(lang: Lang, key: TranslationKey, vars?: Vars): string {
-    // English is the fallback rather than the key itself: a missing translation
-    // should read as slightly wrong, not as machinery leaking into the page.
     const text = CATALOGS[lang][key] ?? en[key] ?? key;
     if (!vars) return text;
     return text.replace(/\{(\w+)\}/g, (whole, name: string) =>
@@ -93,8 +85,6 @@ export function t(key: TranslationKey, vars?: Vars): string {
     return translate(current, key, vars);
 }
 
-// The BCP 47 tag for Intl. Only the base language is tracked, which is enough
-// for dates and numbers to come out in the right shape.
 export function locale(): string {
     return current;
 }

@@ -2,6 +2,7 @@ package submission
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -23,12 +24,13 @@ import (
 const testPassword = "a submission password that is long"
 
 type harness struct {
+	srv   *Server
 	addr  string
 	db    *store.DB
 	blobs *blob.Store
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -54,13 +56,17 @@ func newHarness(t *testing.T) *harness {
 
 	cfg.Outbound.RequireTLS = false
 	cfg.Outbound.RelayHost = "smarthost.example"
+	cfg.Queue.MinFreeDiskBytes = 0
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := New(cfg.Outbound, cfg.Queue, db, blobs, log, nil, &metrics.Counters{})
+	for _, opt := range opts {
+		opt(srv)
+	}
 	go srv.srv.Serve(ln)
 	t.Cleanup(func() { srv.Shutdown() })
 
-	return &harness{addr: ln.Addr().String(), db: db, blobs: blobs}
+	return &harness{srv: srv, addr: ln.Addr().String(), db: db, blobs: blobs}
 }
 
 func (h *harness) addDomain(t *testing.T, name string) int64 {
@@ -323,3 +329,71 @@ func TestMaySend(t *testing.T) {
 }
 
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
+
+func TestSubmissionAddsATraceHeaderAndAnnouncesItsName(t *testing.T) {
+	h := newHarness(t, func(s *Server) { s.SetHostname("mx2.example.com") })
+	h.addDomain(t, "example.com")
+	h.addUser(t, "mailserver", nil)
+
+	c := h.authed(t, "mailserver")
+	if err := c.Mail("boss@example.com", nil); err != nil {
+		t.Fatalf("MAIL FROM: %v", err)
+	}
+	if err := c.Rcpt("stranger@somewhere-else.example", nil); err != nil {
+		t.Fatalf("RCPT TO: %v", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "Subject: traced\r\n\r\nhello\r\n"
+	io.WriteString(w, body)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := h.db.ListMessages(context.Background(), store.ListFilter{})
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("ListMessages = %d, %v", len(msgs), err)
+	}
+	rc, err := h.blobs.Get(msgs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+
+	want := "Received: from client.example ([127.0.0.1])\r\n" +
+		"\tby mx2.example.com (XeronMX) with ESMTPA id " + msgs[0].ID + "\r\n" +
+		"\tfor <stranger@somewhere-else.example>; "
+	if !strings.HasPrefix(string(got), want) || !strings.HasSuffix(string(got), "\r\n"+body) {
+		t.Fatalf("spooled message =\n%q\nwant it to start with\n%q\nand end with the submitted message", got, want)
+	}
+}
+
+func TestSubmissionRefusesALoop(t *testing.T) {
+	h := newHarness(t)
+	h.addDomain(t, "example.com")
+	h.addUser(t, "mailserver", nil)
+
+	c := h.authed(t, "mailserver")
+	if err := c.Mail("boss@example.com", nil); err != nil {
+		t.Fatalf("MAIL FROM: %v", err)
+	}
+	if err := c.Rcpt("stranger@somewhere-else.example", nil); err != nil {
+		t.Fatalf("RCPT TO: %v", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(w, strings.Repeat("Received: from a by b; Wed, 23 Sep 2026 14:57:57 +0000\r\n", 50)+"Subject: loop\r\n\r\nx")
+	err = w.Close()
+	var se *smtp.SMTPError
+	if !errors.As(err, &se) || se.Code != 554 {
+		t.Fatalf("DATA with 50 hops = %v; want 554", err)
+	}
+	if msgs, _ := h.db.ListMessages(context.Background(), store.ListFilter{}); len(msgs) != 0 {
+		t.Fatalf("queued %d messages, want none", len(msgs))
+	}
+}

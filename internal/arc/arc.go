@@ -1,26 +1,35 @@
 package arc
 
 import (
-	"bytes"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 )
 
+var (
+	ErrUnvalidatedChain = errors.New("arc: the message already carries an ARC chain that was not validated")
+	ErrFailedChain      = errors.New("arc: the message's ARC chain was already marked failed")
+	ErrChainTooLong     = errors.New("arc: the message's ARC chain has reached its maximum length")
+)
+
 var DefaultSignedHeaders = []string{
-	"from", "to", "subject", "date", "message-id", "mime-version",
+	"from", "to", "cc", "subject", "date", "message-id", "reply-to",
+	"in-reply-to", "references", "mime-version", "content-type",
+	"content-transfer-encoding", "dkim-signature",
 }
 
 type Sealer struct {
 	Domain   string
 	Selector string
 	Signer   crypto.Signer
+	Now      func() time.Time
 }
 
 func NewSealer(domain, selector string, signer crypto.Signer) *Sealer {
@@ -31,132 +40,105 @@ func NewSealer(domain, selector string, signer crypto.Signer) *Sealer {
 	}
 }
 
+func (s *Sealer) algorithm() string {
+	if _, ok := s.Signer.Public().(ed25519.PublicKey); ok {
+		return "ed25519-sha256"
+	}
+	return "rsa-sha256"
+}
+
+func (s *Sealer) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
 func (s *Sealer) Seal(w io.Writer, r io.Reader, authservID string, authResults string, cv string) error {
-	raw, err := io.ReadAll(r)
+	original, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("arc: read message: %w", err)
 	}
 
-	headerBytes, bodyBytes := splitMessage(raw)
-	parsedHeaders := parseHeaders(headerBytes)
-
-	instance := 1
-	for _, h := range parsedHeaders {
-		if strings.EqualFold(h.Key, "ARC-Seal") {
-			inst := extractTag(h.Value, "i")
-			var n int
-			if _, err := fmt.Sscanf(inst, "%d", &n); err == nil && n >= instance {
-				instance = n + 1
-			}
+	fields, body := splitMessage(normalizeLineEndings(original))
+	c, err := collect(fields)
+	if err != nil {
+		if cv != CVPass && cv != CVFail {
+			return ErrUnvalidatedChain
 		}
+		return ErrFailedChain
 	}
 
-	if cv == "" {
-		if instance == 1 {
-			cv = "none"
-		} else {
-			cv = "pass"
-		}
+	instance := len(c.sets) + 1
+	switch {
+	case instance > MaxInstances:
+		return ErrChainTooLong
+	case instance > 1 && c.latestCV() == CVFail:
+		return ErrFailedChain
+	case instance > 1 && cv != CVPass && cv != CVFail:
+		return ErrUnvalidatedChain
+	case instance == 1:
+		cv = CVNone
 	}
 
 	if authservID == "" {
 		authservID = s.Domain
 	}
 	if authResults == "" {
-		authResults = fmt.Sprintf("spf=pass (xeronmx: relayed by backup MX) smtp.remote-ip=trusted; dkim=pass; dmarc=pass")
+		authResults = "none"
 	}
+	aar := field{name: aarName, raw: fmt.Sprintf("%s: i=%d; %s; %s", aarName, instance, authservID, authResults)}
 
-	aarVal := fmt.Sprintf("i=%d; %s; %s", instance, authservID, authResults)
-	aarHeader := fmt.Sprintf("ARC-Authentication-Results: %s\r\n", aarVal)
+	algo := s.algorithm()
+	t := s.now().UTC().Unix()
 
-	cBody := canonicalizeBodyRelaxed(bodyBytes)
-	bhHash := sha256.Sum256(cBody)
-	bhB64 := base64.StdEncoding.EncodeToString(bhHash[:])
-
-	now := time.Now().UTC().Unix()
-
-	var signedHeadersList []string
-	var headersToSignRelaxed []string
-
-	for _, wanted := range DefaultSignedHeaders {
-		for i := len(parsedHeaders) - 1; i >= 0; i-- {
-			if strings.EqualFold(parsedHeaders[i].Key, wanted) {
-				signedHeadersList = append(signedHeadersList, parsedHeaders[i].Key)
-				headersToSignRelaxed = append(headersToSignRelaxed,
-					canonicalizeHeaderRelaxed(parsedHeaders[i].Key, parsedHeaders[i].Value))
-				break
+	bh := sha256.Sum256(canonBody(body, true))
+	var signed []string
+	var headerInput strings.Builder
+	for _, name := range DefaultSignedHeaders {
+		for i := len(fields) - 1; i >= 0; i-- {
+			if strings.EqualFold(fields[i].name, name) {
+				signed = append(signed, name)
+				headerInput.WriteString(canonHeader(fields[i], true))
 			}
 		}
 	}
 
-	hTag := strings.Join(signedHeadersList, ":")
-	amsWithoutB := fmt.Sprintf("i=%d; a=rsa-sha256; c=relaxed/relaxed; d=%s; s=%s; t=%d; bh=%s; h=%s; b=",
-		instance, s.Domain, s.Selector, now, bhB64, hTag)
-
-	var amsToHash strings.Builder
-	for _, h := range headersToSignRelaxed {
-		amsToHash.WriteString(h)
-		amsToHash.WriteString("\r\n")
-	}
-	amsToHash.WriteString(canonicalizeHeaderRelaxed("ARC-Message-Signature", amsWithoutB))
-
-	amsSigB64, err := s.signData([]byte(amsToHash.String()))
+	ams := field{name: amsName, raw: fmt.Sprintf("%s: i=%d; a=%s; c=relaxed/relaxed; d=%s; s=%s; t=%d; bh=%s; h=%s; b=",
+		amsName, instance, algo, s.Domain, s.Selector, t,
+		base64.StdEncoding.EncodeToString(bh[:]), strings.Join(signed, ":"))}
+	headerInput.WriteString(strings.TrimSuffix(canonHeader(ams, true), "\r\n"))
+	sig, err := s.sign([]byte(headerInput.String()))
 	if err != nil {
 		return fmt.Errorf("arc: sign ams: %w", err)
 	}
+	ams.raw += sig
 
-	amsVal := amsWithoutB + amsSigB64
-	amsHeader := fmt.Sprintf("ARC-Message-Signature: %s\r\n", amsVal)
+	as := field{name: asName, raw: fmt.Sprintf("%s: i=%d; a=%s; cv=%s; d=%s; s=%s; t=%d; b=",
+		asName, instance, algo, cv, s.Domain, s.Selector, t)}
+	sig, err = s.sign(sealInput(c.sets, &set{aar: &aar, ams: &ams, as: &as}))
+	if err != nil {
+		return fmt.Errorf("arc: sign seal: %w", err)
+	}
+	as.raw += sig
 
-	asWithoutB := fmt.Sprintf("i=%d; a=rsa-sha256; cv=%s; d=%s; s=%s; t=%d; b=",
-		instance, cv, s.Domain, s.Selector, now)
-
-	var asToHash strings.Builder
-	for _, h := range parsedHeaders {
-		k := strings.ToLower(h.Key)
-		if k == "arc-authentication-results" || k == "arc-message-signature" || k == "arc-seal" {
-			asToHash.WriteString(canonicalizeHeaderRelaxed(h.Key, h.Value))
-			asToHash.WriteString("\r\n")
+	for _, f := range []field{as, ams, aar} {
+		if _, err := io.WriteString(w, f.raw+"\r\n"); err != nil {
+			return err
 		}
 	}
-
-	asToHash.WriteString(canonicalizeHeaderRelaxed("ARC-Authentication-Results", aarVal))
-	asToHash.WriteString("\r\n")
-	asToHash.WriteString(canonicalizeHeaderRelaxed("ARC-Message-Signature", amsVal))
-	asToHash.WriteString("\r\n")
-	asToHash.WriteString(canonicalizeHeaderRelaxed("ARC-Seal", asWithoutB))
-
-	asSigB64, err := s.signData([]byte(asToHash.String()))
-	if err != nil {
-		return fmt.Errorf("arc: sign as: %w", err)
-	}
-
-	asVal := asWithoutB + asSigB64
-	asHeader := fmt.Sprintf("ARC-Seal: %s\r\n", asVal)
-
-	if _, err := io.WriteString(w, asHeader); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(w, amsHeader); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(w, aarHeader); err != nil {
-		return err
-	}
-	if _, err := w.Write(raw); err != nil {
-		return err
-	}
-
-	return nil
+	_, err = w.Write(original)
+	return err
 }
 
-func (s *Sealer) signData(data []byte) (string, error) {
+func (s *Sealer) sign(data []byte) (string, error) {
 	hash := sha256.Sum256(data)
-	var sig []byte
-	var err error
-
-	if rsaKey, ok := s.Signer.(*rsa.PrivateKey); ok {
-		sig, err = rsa.SignPKCS1v15(rand.Reader, rsaKey, crypto.SHA256, hash[:])
+	var (
+		sig []byte
+		err error
+	)
+	if _, ok := s.Signer.Public().(ed25519.PublicKey); ok {
+		sig, err = s.Signer.Sign(rand.Reader, hash[:], crypto.Hash(0))
 	} else {
 		sig, err = s.Signer.Sign(rand.Reader, hash[:], crypto.SHA256)
 	}
@@ -164,107 +146,4 @@ func (s *Sealer) signData(data []byte) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(sig), nil
-}
-
-type headerField struct {
-	Key   string
-	Value string
-}
-
-func splitMessage(raw []byte) ([]byte, []byte) {
-	idx := bytes.Index(raw, []byte("\r\n\r\n"))
-	if idx != -1 {
-		return raw[:idx], raw[idx+4:]
-	}
-	idx = bytes.Index(raw, []byte("\n\n"))
-	if idx != -1 {
-		return raw[:idx], raw[idx+2:]
-	}
-	return raw, nil
-}
-
-func parseHeaders(headerBytes []byte) []headerField {
-	lines := strings.Split(string(headerBytes), "\n")
-	var fields []headerField
-	var currentKey, currentVal string
-
-	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		if len(line) == 0 {
-			continue
-		}
-		if line[0] == ' ' || line[0] == '\t' {
-			currentVal += " " + strings.TrimSpace(line)
-		} else {
-			if currentKey != "" {
-				fields = append(fields, headerField{Key: currentKey, Value: strings.TrimSpace(currentVal)})
-			}
-			colon := strings.IndexByte(line, ':')
-			if colon != -1 {
-				currentKey = strings.TrimSpace(line[:colon])
-				currentVal = strings.TrimSpace(line[colon+1:])
-			} else {
-				currentKey = ""
-				currentVal = ""
-			}
-		}
-	}
-	if currentKey != "" {
-		fields = append(fields, headerField{Key: currentKey, Value: strings.TrimSpace(currentVal)})
-	}
-	return fields
-}
-
-func canonicalizeHeaderRelaxed(name, val string) string {
-	name = strings.ToLower(strings.TrimSpace(name))
-
-	words := strings.Fields(val)
-	val = strings.Join(words, " ")
-
-	return name + ":" + val
-}
-
-func canonicalizeBodyRelaxed(body []byte) []byte {
-	if len(body) == 0 {
-		return nil
-	}
-	lines := strings.Split(string(body), "\n")
-	var canonLines []string
-
-	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		words := strings.Fields(line)
-		canonLines = append(canonLines, strings.Join(words, " "))
-	}
-
-	for len(canonLines) > 0 && canonLines[len(canonLines)-1] == "" {
-		canonLines = canonLines[:len(canonLines)-1]
-	}
-
-	if len(canonLines) == 0 {
-		return nil
-	}
-
-	var sb strings.Builder
-	for _, l := range canonLines {
-		sb.WriteString(l)
-		sb.WriteString("\r\n")
-	}
-	return []byte(sb.String())
-}
-
-func extractTag(headerVal, tag string) string {
-	parts := strings.Split(headerVal, ";")
-	for _, p := range parts {
-		trimmed := strings.TrimSpace(p)
-		eq := strings.IndexByte(trimmed, '=')
-		if eq != -1 {
-			k := strings.TrimSpace(trimmed[:eq])
-			v := strings.TrimSpace(trimmed[eq+1:])
-			if strings.EqualFold(k, tag) {
-				return v
-			}
-		}
-	}
-	return ""
 }

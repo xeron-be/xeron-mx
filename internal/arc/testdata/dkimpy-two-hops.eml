@@ -1,0 +1,49 @@
+ARC-Seal: i=2; cv=pass; a=rsa-sha256; d=hop2.example; s=sel;
+ t=1790175700;
+ b=kE4JT+1D2uLjMcU+LD0aj5hfxotXxxCb7oilkCbkIGV6Cf7Jm8s8UZaINHjiWmKNfH+Xx
+ sukQgM98g50TBmgGO9A8ZjY/yNaNemBZmmXEzauKb6FXJGSPKitaVI2kKvE91rye5HgJ73A
+ VuyRmnpfn3nRZVmyPq9y90hAUL3Hh6NaRcSZXIiWaKowvA5RZrBURwtTqHpexDiB9SBuMeL
+ rhxIbXU4M+2SjZX1v7CeBQWjaWkUh+BIufVWQ222odvQRx/FhYsZgc/PIsPDQssjZ/ycLvt
+ Mv+FCEOtTbWVnGYjbLA7/N8q0/I7XavAyOZvCbkk/WfGm9oL4UG1Q1rVXNJA==
+ARC-Message-Signature: i=2; a=rsa-sha256; c=relaxed/relaxed;
+ d=hop2.example; s=sel; t=1790175700; h=from : to : subject : date :
+ message-id; bh=40cYdKPx06SdK7HiUgUJ6b4BNKVmhCty0qs0st1ZBcc=;
+ b=j1i7aA9IGevkgFT5KHbbBdy0xzGlKKfrC7oTTKRIzczuYvFpZJKIsY6mnEv4VePFTR8mW
+ r8kY47wqrymajde7Muyxx8eD5TtXoyc+3RkYGzcFYZXthdTDI+xJPUjC2YVQ1xDYEBKqj6d
+ O6dqAzn2raSc+MnP+Ja1Mm5Qd+bmXK1snAV/2pHKnkn43yJsqDXahN4ocQBnv5pYq+DxyEk
+ MEf0VSpd27gvfymq07k6GPOdTrnVJdMBqvxqGEH6oPb7roQlFFJnGMgOPSvhbtI1XJwOPmU
+ BJa4+0komQQ3avSiZPeofv4K6a2K7ahlXzBk0AXXVbJ8LTQ3NsOfq5tMYb1g==
+ARC-Authentication-Results: i=2; mx.hop2.example;
+ arc=pass
+Authentication-Results: mx.hop2.example; arc=pass
+ARC-Seal: i=1; cv=none; a=rsa-sha256; d=hop1.example; s=sel;
+ t=1790175600;
+ b=WGwLW7P6DOcazSlTT1uI7dWgnlMHAAHmuOtvGW2nkaPu1HrfZVbLtVSiHut6Z2ehlsTlJ
+ CDgeZ/u7rxE4fmC0PCd+IUVPKzfxK2wSnTtNx/NqU8zJ0AcBqaFtVt6SydqCgnv/jncXQg8
+ cGG+WC6EHJLQYXqNyHeIUYtX2+Sq5xMj4lw7vNNG+JwDws5yITjFeAetZe0fjRlhxrjLZik
+ WnnegIKHK7tEHxSjEkjqMkd8a5tS3WhvI3CD+bd4xHI/CixEWQsQFLZYM6/1+XwVNMb4jFW
+ UZDgHlrs703Y7j1ZPoQEib8wGoXOpru3sq8kFzb8vuxJ975JovkeHpGvp5Sg==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed;
+ d=hop1.example; s=sel; t=1790175600; h=from : to : subject : date :
+ message-id; bh=40cYdKPx06SdK7HiUgUJ6b4BNKVmhCty0qs0st1ZBcc=;
+ b=Y4uBSnFBdhlP865mPu1X4HHxLEhw0wZGlZ5rVWPeb19afOvx/tviRDaEsCDWSPJPb1+de
+ clAf5f+pdYyY7cnEuzWvVZ5+idr9oh9gTYSmB5LqtE5bxcpxdZVsdpewmE5VinqBE+0aIpd
+ tF8THEDC2nfJPZFkK7aEfFk1zC0y19VXUnAGac8cewDKyEkFEbvehql9OqIaXCjs8IG+xEN
+ j3oRV/DJ+ftEou5/D9tAhs169O8hN6oP/jXdcAt+5UI3mTuwud2o+RDXrIZlj0bFfFUkBMR
+ uLngkYRADbJlsiOh3HQQ7NsuRzkC58+0Y4dONNO77EEe1mOn6yYDzV9iqWvQ==
+ARC-Authentication-Results: i=1; mx.hop1.example;
+ arc=none
+Authentication-Results: mx.hop1.example; arc=none
+From: Sender <sender@origin.example>
+To: rcpt@dest.example
+Subject: a message forwarded twice
+Date: Wed, 23 Sep 2026 15:00:00 +0000
+Message-ID: <vector@origin.example>
+MIME-Version: 1.0
+Content-Type: text/plain
+
+first line
+    an indented   line with  runs
+	a tab-indented line   
+
+

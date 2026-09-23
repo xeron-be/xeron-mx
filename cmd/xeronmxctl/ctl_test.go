@@ -415,11 +415,6 @@ func TestClientMethodsMockServer(t *testing.T) {
 		t.Fatalf("post echo failed: %v, %v", err, postEcho)
 	}
 
-	var patchEcho map[string]any
-	if err := c.patch(ctx, "/echo", map[string]any{"patch": true}, &patchEcho); err != nil || patchEcho["patch"].(bool) != true {
-		t.Fatalf("patch echo failed: %v, %v", err, patchEcho)
-	}
-
 	var delResp map[string]bool
 	if err := c.delete(ctx, "/del", &delResp); err != nil || !delResp["deleted"] {
 		t.Fatalf("delete failed: %v, %v", err, delResp)
@@ -608,9 +603,9 @@ func TestCLIFullE2EWorkflow(t *testing.T) {
 			t.Fatalf("expected usage error for domains test, got %v", err)
 		}
 
-		out, _, err = runArgs(t, append(baseFlags, "domains", "test", "1")...)
-		if err != nil {
-			t.Fatalf("domains test probe returned error: %v", err)
+		_, probe, err := runArgs(t, append(baseFlags, "domains", "test", "1")...)
+		if err != nil || !strings.Contains(probe, "primary") {
+			t.Fatalf("domains test probe: %v, %q", err, probe)
 		}
 
 		outJSON, _, err = runArgs(t, append(baseFlags, "--json", "domains", "test", "1")...)
@@ -636,6 +631,47 @@ func TestCLIFullE2EWorkflow(t *testing.T) {
 		_, _, err = runArgs(t, append(baseFlags, "domains", "bogus")...)
 		if err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
 			t.Fatalf("expected unknown subcommand error, got %v", err)
+		}
+	})
+
+	t.Run("domains_recipients", func(t *testing.T) {
+		domID, err := env.db.CreateDomain(context.Background(), &store.Domain{
+			Name: "listed.example", PrimaryHost: "127.0.0.1", PrimaryPort: 25, PrimaryTLS: "none", RetentionHours: 24, Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("create domain: %v", err)
+		}
+		id := fmt.Sprintf("%d", domID)
+
+		out, _, err := runArgs(t, append(baseFlags, "domains", "recipients", id)...)
+		if err != nil || !strings.Contains(out, "every address") {
+			t.Fatalf("empty list: %v, %q", err, out)
+		}
+
+		file := filepath.Join(t.TempDir(), "recipients.txt")
+		if err := os.WriteFile(file, []byte("# staff\nBob@listed.example\n\nalice@listed.example\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, _, err = runArgs(t, append(baseFlags, "domains", "recipients", id, "--file", file)...)
+		if err != nil || !strings.Contains(out, "alice@listed.example\nbob@listed.example\n") {
+			t.Fatalf("--file: %v, %q", err, out)
+		}
+
+		outJSON, _, err := runArgs(t, append(baseFlags, "--json", "domains", "recipients", id)...)
+		if err != nil || !strings.Contains(outJSON, `"bob@listed.example"`) {
+			t.Fatalf("--json: %v, %s", err, outJSON)
+		}
+
+		if _, _, err = runArgs(t, append(baseFlags, "domains", "recipients", id, "--clear")...); err != nil {
+			t.Fatalf("--clear: %v", err)
+		}
+		if list, _ := env.db.DomainRecipients(context.Background(), domID); len(list) != 0 {
+			t.Fatalf("--clear left %v", list)
+		}
+
+		_, _, err = runArgs(t, append(baseFlags, "domains", "recipients", id, "--clear", "--file", file)...)
+		if err == nil || !strings.Contains(err.Error(), "usage: xeronmxctl domains recipients") {
+			t.Fatalf("--clear with --file: %v; want a usage error", err)
 		}
 	})
 

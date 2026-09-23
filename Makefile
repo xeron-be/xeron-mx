@@ -17,8 +17,6 @@ ui:
 	rm -rf internal/ui/dist/assets internal/ui/dist/index.html
 	cd web && npm ci --no-audit --no-fund && npm run build
 
-# Also checks the UI's translations against the error codes and event types
-# the Go code emits, so run it after changing either side.
 .PHONY: ui-test
 ui-test:
 	cd web && npm test
@@ -75,3 +73,11 @@ all: ui build
 .PHONY: clean
 clean:
 	rm -rf bin dist web/node_modules internal/ui/dist/assets internal/ui/dist/index.html
+
+# The outage drill CI runs: real Postfix in a container, the primary taken down,
+# XeronMX killed with SIGKILL twice, every message checked at the primary.
+# Needs Docker, swaks and python3.
+.PHONY: drill
+drill:
+	CGO_ENABLED=0 GOOS=linux go build -trimpath -o bin/xeronmx ./cmd/xeronmx
+	bash test/drill/run.sh

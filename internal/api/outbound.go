@@ -99,6 +99,9 @@ func (s *Server) handleCreateDKIM(w http.ResponseWriter, r *http.Request) {
 			"algorithm": key.Algorithm},
 	})
 
+	if fresh, err := s.db.DKIMKeyFor(r.Context(), d.ID); err == nil {
+		stored = fresh
+	}
 	out := s.dkimJSON(d, stored)
 	out["configured"] = true
 	s.ok(w, http.StatusCreated, out)

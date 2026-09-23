@@ -117,4 +117,7 @@ const (
 	ErrInvalidIP                 = "invalid_ip"
 	ErrDNSBLNotConfigured        = "dnsbl_not_configured"
 	ErrDNSBLCheckFailed          = "dnsbl_check_failed"
+	ErrInvalidRecipient          = "invalid_recipient"
+	ErrRecipientsReadFailed      = "recipients_read_failed"
+	ErrRecipientsUpdateFailed    = "recipients_update_failed"
 )

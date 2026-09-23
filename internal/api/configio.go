@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +35,8 @@ type configDomain struct {
 	MaxQueueMessages *int64 `yaml:"max_queue_messages,omitempty"`
 	RetentionHours   int    `yaml:"retention_hours,omitempty"`
 	Enabled          *bool  `yaml:"enabled,omitempty"`
+
+	Recipients *[]string `yaml:"recipients,omitempty"`
 }
 
 type configSMTPUser struct {
@@ -73,7 +76,7 @@ func (s *Server) ExportConfigYAML(ctx context.Context) ([]byte, error) {
 	doc := configDocument{Version: configDocVersion}
 	for _, d := range domains {
 		enabled := d.Enabled
-		doc.Domains = append(doc.Domains, configDomain{
+		cd := configDomain{
 			Name:             d.Name,
 			PrimaryHost:      d.PrimaryHost,
 			PrimaryPort:      d.PrimaryPort,
@@ -81,7 +84,15 @@ func (s *Server) ExportConfigYAML(ctx context.Context) ([]byte, error) {
 			MaxQueueMessages: d.MaxQueueMessages,
 			RetentionHours:   d.RetentionHours,
 			Enabled:          &enabled,
-		})
+		}
+		list, err := s.db.DomainRecipients(ctx, d.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read recipients of %s: %w", d.Name, err)
+		}
+		if len(list) > 0 {
+			cd.Recipients = &list
+		}
+		doc.Domains = append(doc.Domains, cd)
 	}
 	for _, u := range users {
 		enabled := u.Enabled
@@ -194,6 +205,7 @@ type importPlan struct {
 	updateDomains []*store.Domain
 	createUsers   []configSMTPUser
 	enableUsers   map[string]bool
+	setRecipients map[string][]string
 }
 
 func (p *importPlan) summary() string {
@@ -221,7 +233,7 @@ func (p *importPlan) changedCount() int {
 }
 
 func (s *Server) planImport(ctx context.Context, doc *configDocument) (*importPlan, []string, string) {
-	plan := &importPlan{enableUsers: map[string]bool{}}
+	plan := &importPlan{enableUsers: map[string]bool{}, setRecipients: map[string][]string{}}
 	var warnings []string
 
 	incoming := map[string]bool{}
@@ -257,11 +269,29 @@ func (s *Server) planImport(ctx context.Context, doc *configDocument) (*importPl
 			return nil, nil, fmt.Sprintf("%s: %s", name, errMsg)
 		}
 
+		recipientsChange := false
+		if cd.Recipients != nil {
+			list, valid := validRecipients(name, *cd.Recipients)
+			if !valid {
+				return nil, nil, fmt.Sprintf("%s: every known recipient must be an address in %s", name, name)
+			}
+			current := []string{}
+			if existing != nil {
+				if current, err = s.db.DomainRecipients(ctx, existing.ID); err != nil {
+					return nil, nil, "could not read the existing recipient lists"
+				}
+			}
+			if !slices.Equal(current, list) {
+				recipientsChange = true
+				plan.setRecipients[name] = list
+			}
+		}
+
 		switch {
 		case existing == nil:
 			plan.createDomains = append(plan.createDomains, d)
 			plan.domains = append(plan.domains, changed{Name: name, Action: "created"})
-		case sameDomain(existing, d):
+		case sameDomain(existing, d) && !recipientsChange:
 			plan.domains = append(plan.domains, changed{Name: name, Action: "unchanged"})
 		default:
 			plan.updateDomains = append(plan.updateDomains, d)
@@ -338,6 +368,15 @@ func (s *Server) applyImport(ctx context.Context, plan *importPlan) error {
 	for _, d := range plan.updateDomains {
 		if err := s.db.UpdateDomain(ctx, d); err != nil {
 			return fmt.Errorf("update domain %s: %w", d.Name, err)
+		}
+	}
+	for name, list := range plan.setRecipients {
+		d, err := s.db.DomainByName(ctx, name)
+		if err != nil {
+			return fmt.Errorf("look up %s: %w", name, err)
+		}
+		if err := s.db.SetDomainRecipients(ctx, d.ID, list); err != nil {
+			return fmt.Errorf("set recipients of %s: %w", name, err)
 		}
 	}
 	for _, cu := range plan.createUsers {

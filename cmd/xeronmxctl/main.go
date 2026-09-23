@@ -20,7 +20,7 @@ Usage:
 Commands:
   login       Save the server URL and API token for later runs
   status      Overall state: primaries, queue depth, certificate
-  domains     list | add | rm | test
+  domains     list | add | rm | test | recipients
   queue       list | show | retry | rm | release
   events      Recent timeline entries
   filters     list
@@ -28,7 +28,7 @@ Commands:
   tokens      list | rm
   cluster     The fleet as this node sees it
   config      export | import
-  drain       Manage maintenance drain mode (start, cancel, status)
+  drain       Refuse new mail and empty the queue (--wait, --status, --cancel)
   version     Client and server versions
 
 Flags:

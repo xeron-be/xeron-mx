@@ -22,6 +22,7 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/maintenance"
 	"github.com/xeron-be/xeron-mx/internal/metrics"
 	"github.com/xeron-be/xeron-mx/internal/netlimit"
+	"github.com/xeron-be/xeron-mx/internal/proxy"
 	"github.com/xeron-be/xeron-mx/internal/ratelimit"
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
@@ -44,10 +45,11 @@ type Server struct {
 	notify Notifier
 	count  *metrics.Counters
 
-	maintenance *maintenance.Manager
-	diskPath    string
-	minDisk     int64
-	diskCheck   diskguard.CheckFunc
+	maintenance  *maintenance.Manager
+	proxyTrusted []*net.IPNet
+	diskPath     string
+	minDisk      int64
+	diskCheck    diskguard.CheckFunc
 
 	limiter *ratelimit.Limiter
 
@@ -67,6 +69,7 @@ func New(cfg config.OutboundConfig, queue config.QueueConfig, db *store.DB, blob
 
 	srv := smtp.NewServer(smtp.BackendFunc(s.newSession))
 	srv.Addr = cfg.Addr
+	srv.Domain = mailutil.Hostname("")
 	srv.MaxMessageBytes = cfg.MaxMessageBytes
 	srv.MaxRecipients = 200
 	srv.ReadTimeout = 5 * time.Minute
@@ -81,6 +84,8 @@ func New(cfg config.OutboundConfig, queue config.QueueConfig, db *store.DB, blob
 }
 
 func (s *Server) SetTLSConfig(cfg *tls.Config)          { s.srv.TLSConfig = cfg }
+func (s *Server) SetHostname(name string)               { s.srv.Domain = mailutil.Hostname(name) }
+func (s *Server) SetProxyTrusted(trusted []*net.IPNet)  { s.proxyTrusted = trusted }
 func (s *Server) SetMaintenance(m *maintenance.Manager) { s.maintenance = m }
 func (s *Server) SetDiskGuard(path string, minBytes int64, check diskguard.CheckFunc) {
 	s.diskPath = path
@@ -98,7 +103,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("submission: listen on %s: %w", s.cfg.Addr, err)
 	}
-	ln = netlimit.Listen(ln, s.cfg.MaxConnections,
+	ln = netlimit.Listen(proxy.Listen(ln, s.proxyTrusted), s.cfg.MaxConnections,
 		"421 4.7.0 Too many concurrent connections, try again later\r\n")
 
 	s.log.Info("submission listener started",
@@ -132,11 +137,12 @@ func (s *Server) newSession(c *smtp.Conn) (smtp.Session, error) {
 			Message:      "Service temporarily unavailable, server is draining for maintenance",
 		}
 	}
-	return &session{srv: s, remote: remote, log: s.log.With("remote", remote)}, nil
+	return &session{srv: s, conn: c, remote: remote, log: s.log.With("remote", remote)}, nil
 }
 
 type session struct {
 	srv    *Server
+	conn   *smtp.Conn
 	remote string
 	log    *slog.Logger
 
@@ -309,6 +315,25 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	return nil
 }
 
+func (s *session) trace(id string) string {
+	t := mailutil.Trace{
+		Remote:   s.remote,
+		By:       s.srv.srv.Domain,
+		Protocol: mailutil.Protocol(false, true),
+		ID:       id,
+		At:       time.Now(),
+	}
+	if s.conn != nil {
+		t.Helo = s.conn.Hostname()
+		_, isTLS := s.conn.TLSConnectionState()
+		t.Protocol = mailutil.Protocol(isTLS, true)
+	}
+	if len(s.rcpts) == 1 {
+		t.Recipient = s.rcpts[0]
+	}
+	return t.Header()
+}
+
 func (s *session) Data(r io.Reader) error {
 	if s.user == nil {
 		return smtp.ErrAuthRequired
@@ -332,7 +357,20 @@ func (s *session) Data(r io.Reader) error {
 	head, rest := mailutil.PeekHeaders(r, 64<<10)
 	subject := mailutil.ExtractSubject(head)
 
-	written, err := s.srv.blobs.Put(id, rest, s.srv.cfg.MaxMessageBytes)
+	if mailutil.CountReceived(head) >= mailutil.MaxHops {
+		io.Copy(io.Discard, rest)
+		s.log.Warn("submission refused: too many hops, probably a loop", "user", s.user.Username)
+		return &smtp.SMTPError{
+			Code:         554,
+			EnhancedCode: smtp.EnhancedCode{5, 4, 6},
+			Message:      "Too many hops, mail loop detected",
+		}
+	}
+
+	trace := s.trace(id)
+	rest = io.MultiReader(strings.NewReader(trace), rest)
+
+	written, err := s.srv.blobs.Put(id, rest, s.srv.cfg.MaxMessageBytes+int64(len(trace)))
 	if err != nil {
 		s.srv.blobs.Delete(id)
 		if strings.Contains(err.Error(), "exceeds") {

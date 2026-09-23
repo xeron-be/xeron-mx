@@ -30,7 +30,13 @@ var schemaV5SQL string
 //go:embed schema_v6.sql
 var schemaV6SQL string
 
-const schemaVersion = 6
+//go:embed schema_v7.sql
+var schemaV7SQL string
+
+//go:embed schema_v8.sql
+var schemaV8SQL string
+
+const schemaVersion = 8
 
 type DB struct {
 	*sql.DB
@@ -43,7 +49,6 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 	_ = os.Chmod(dir, 0o700)
 
-	// _txlock=immediate starts transactions as BEGIN IMMEDIATE to prevent SQLITE_BUSY_SNAPSHOT lock upgrades.
 	dsn := path + "?_txlock=immediate" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=busy_timeout(10000)" +
@@ -121,6 +126,16 @@ func (db *DB) migrate(ctx context.Context) error {
 			return fmt.Errorf("store: apply schema v6: %w", err)
 		}
 	}
+	if current < 7 {
+		if _, err := tx.ExecContext(ctx, schemaV7SQL); err != nil {
+			return fmt.Errorf("store: apply schema v7: %w", err)
+		}
+	}
+	if current < 8 {
+		if _, err := tx.ExecContext(ctx, schemaV8SQL); err != nil {
+			return fmt.Errorf("store: apply schema v8: %w", err)
+		}
+	}
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("store: set user_version: %w", err)
@@ -171,6 +186,10 @@ type Message struct {
 
 	QuarantinedAt    *time.Time
 	QuarantineReason string
+
+	AuthResults         string
+	SenderAuthenticated bool
+	MalwareScan         string
 }
 
 type Direction string

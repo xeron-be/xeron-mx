@@ -1,7 +1,5 @@
 # UI stage. The admin panel is a Vite/React SPA that the Go binary embeds, so it
 # has to exist before the Go build runs.
-# Both build stages run on the builder's own platform and cross-compile, so a
-# multi-arch build does not run npm and the Go compiler under QEMU emulation.
 FROM --platform=$BUILDPLATFORM node:22-alpine AS ui
 
 WORKDIR /ui

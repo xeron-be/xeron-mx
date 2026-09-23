@@ -19,8 +19,6 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
 
-// primary is a scripted SMTP server that can be switched between answering
-// normally, refusing with 421, and accepting without ever greeting.
 type primary struct {
 	host string
 	port int
@@ -240,9 +238,6 @@ func TestPrimaryComesUpAfterTheSuccessThreshold(t *testing.T) {
 	}
 }
 
-// A primary that has never answered is seeded down, so it never transitions.
-// Without a special case a typo in primary_host would produce no event and no
-// alert at all.
 func TestAPrimaryThatWasNeverReachableIsReportedOnce(t *testing.T) {
 	h := newHarness(t)
 	id := h.domain("127.0.0.1", closedPort(t), true)
@@ -280,8 +275,6 @@ func TestPrimaryGoesDownOnlyAfterTheFailureThreshold(t *testing.T) {
 		t.Fatal("primary marked down after two failures; the failure threshold is 3")
 	}
 
-	// A single success in between resets the count: a flapping primary is
-	// not an outage.
 	p.refuse.Store(false)
 	h.check(1)
 	p.refuse.Store(true)
@@ -348,8 +341,6 @@ func TestDisabledDomainsAreNotProbed(t *testing.T) {
 	}
 }
 
-// One primary that accepts connections and then says nothing must not stall
-// the checks of every other domain on the node: checkAll waits for all of them.
 func TestASilentPrimaryIsBoundedByTheTimeout(t *testing.T) {
 	p := startPrimary(t)
 	p.silent.Store(true)

@@ -68,11 +68,6 @@ export function Cluster({
 
             {error && <Alert>{error}</Alert>}
 
-            {/*
-                Said first and said plainly. Somebody looking at a fleet view
-                will otherwise assume the queue is shared, and act on that
-                assumption during exactly the incident where it is not true.
-            */}
             <Alert tone="ok">{t("cluster.notSharedNotice")}</Alert>
 
             {drifted > 0 && (

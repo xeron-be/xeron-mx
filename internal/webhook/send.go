@@ -18,6 +18,7 @@ import (
 
 const (
 	SignatureHeader = "X-XeronMX-Signature"
+	TimestampHeader = "X-XeronMX-Timestamp"
 	EventHeader     = "X-XeronMX-Event"
 	DeliveryHeader  = "X-XeronMX-Delivery"
 	AttemptHeader   = "X-XeronMX-Attempt"
@@ -26,10 +27,19 @@ const (
 
 const maxResponseBytes = 4096
 
-func Sign(secret, body []byte) string {
+func Sign(secret []byte, timestamp int64, body []byte) string {
 	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(strconv.FormatInt(timestamp, 10) + "."))
 	mac.Write(body)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func SignRequest(req *http.Request, secret, body []byte, now time.Time) {
+	ts := now.Unix()
+	req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
+	if len(secret) > 0 {
+		req.Header.Set(SignatureHeader, Sign(secret, ts, body))
+	}
 }
 
 func (d *Dispatcher) post(ctx context.Context, hook *store.Webhook, del *store.Delivery) (int, error) {
@@ -50,13 +60,14 @@ func (d *Dispatcher) send(ctx context.Context, hook *store.Webhook, eventType st
 	}
 	req.Header.Set(AttemptHeader, strconv.Itoa(attempt))
 
+	var secret []byte
 	if len(hook.Secret) > 0 {
-		secret, err := d.seal.Unseal(hook.Secret)
+		secret, err = d.seal.Unseal(hook.Secret)
 		if err != nil {
 			return http.StatusBadRequest, fmt.Errorf("the signing secret could not be read: %w", err)
 		}
-		req.Header.Set(SignatureHeader, Sign(secret, body))
 	}
+	SignRequest(req, secret, body, time.Now())
 
 	resp, err := d.client.Do(req)
 	if err != nil {

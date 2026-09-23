@@ -17,6 +17,7 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/acme"
 	"github.com/xeron-be/xeron-mx/internal/alert"
 	"github.com/xeron-be/xeron-mx/internal/api"
+	"github.com/xeron-be/xeron-mx/internal/authres"
 	"github.com/xeron-be/xeron-mx/internal/backup"
 	"github.com/xeron-be/xeron-mx/internal/blob"
 	"github.com/xeron-be/xeron-mx/internal/clamav"
@@ -29,6 +30,7 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/maintenance"
 	"github.com/xeron-be/xeron-mx/internal/metrics"
 	"github.com/xeron-be/xeron-mx/internal/oidc"
+	"github.com/xeron-be/xeron-mx/internal/proxy"
 	"github.com/xeron-be/xeron-mx/internal/sender"
 	"github.com/xeron-be/xeron-mx/internal/smtpd"
 	"github.com/xeron-be/xeron-mx/internal/spam"
@@ -99,6 +101,7 @@ func run() error {
 	apiSrv := api.New(cfg.HTTP, cfg.SMTP, cfg.Queue, db, blobs, log.With("component", "api"), collector)
 
 	alerter := alert.New(cfg.Alerts, cfg.SMTP.Hostname, log.With("component", "alerts"))
+	alerter.Resume(ctx, db)
 	notifier := fanOut{apiSrv.Hub(), alerter}
 
 	spamChecker := spam.New(cfg.Spam, log.With("component", "spam"))
@@ -141,9 +144,6 @@ func run() error {
 
 	node := cluster.New(cfg.Cluster, nodeID, cfg.ClusterRole(), version.Version,
 		db, log.With("component", "cluster"))
-	// The API server renders and applies the configuration document the cluster
-	// replicates. Handing it over as an interface is what keeps the dependency
-	// pointing one way.
 	node.SetConfigSource(apiSrv)
 	apiSrv.SetCluster(node)
 
@@ -154,6 +154,9 @@ func run() error {
 	}
 	smtpSrv.SetDNSBL(dnsblChecker)
 	smtpSrv.SetClamAV(clamavScanner)
+	if cfg.SMTP.SenderAuth {
+		smtpSrv.SetAuthChecker(&authres.Checker{})
+	}
 	smtpSrv.SetMaintenance(maintMgr)
 	smtpSrv.SetDiskGuard(cfg.SpoolDir(), cfg.Queue.MinFreeDiskBytes, diskguard.DefaultCheck)
 	checker := health.New(cfg.Health, db, log.With("component", "health"), notifier, wake, counters)
@@ -164,6 +167,10 @@ func run() error {
 	if cfg.Outbound.Enabled {
 		submissionSrv = submission.New(cfg.Outbound, cfg.Queue, db, blobs,
 			log.With("component", "submission"), notifier, counters)
+		submissionSrv.SetHostname(cfg.SMTP.Hostname)
+		if trusted, err := proxy.ParseTrusted(cfg.SMTP.ProxyProtocolTrusted); err == nil {
+			submissionSrv.SetProxyTrusted(trusted)
+		}
 		submissionSrv.SetMaintenance(maintMgr)
 		submissionSrv.SetDiskGuard(cfg.SpoolDir(), cfg.Queue.MinFreeDiskBytes, diskguard.DefaultCheck)
 	}

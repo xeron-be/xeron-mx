@@ -4,9 +4,6 @@ import { Alert, Card } from "../components/ui";
 import { useT } from "../i18n";
 import type { TranslationKey } from "../locales/en";
 
-// The provider answers with a short code in the query string rather than a
-// message, so the reason can be shown in the operator's own language and the
-// detail stays in the server log where it belongs.
 const SSO_ERRORS: Record<string, TranslationKey> = {
     not_configured: "sso.errNotConfigured",
     not_ready: "sso.errNotReady",
@@ -21,7 +18,6 @@ const SSO_ERRORS: Record<string, TranslationKey> = {
 function readSSOError(): string {
     const code = new URLSearchParams(window.location.search).get("sso_error");
     if (!code) return "";
-    // Clear it so a reload does not resurrect an error the operator has read.
     window.history.replaceState({}, "", window.location.pathname);
     return code;
 }
@@ -68,9 +64,6 @@ export function Auth({
     }
 
     const sso = methods?.oidc?.enabled === true;
-    // The wizard always uses a password: the very first account is what an
-    // operator falls back to when the identity provider is unreachable, so it
-    // cannot itself depend on the provider.
     const passwords = needsSetup || methods === null || methods.password_login !== false;
 
     return (

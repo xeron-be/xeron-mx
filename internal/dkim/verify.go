@@ -107,8 +107,7 @@ func CheckDNS(ctx context.Context, domain, selector, expectedPublicB64 string) (
 	}
 
 	res.Found = true
-	for _, raw := range rawRecords {
-		cleaned := CleanTXTRecord(raw)
+	for _, cleaned := range uniqueRecords(rawRecords) {
 		res.Records = append(res.Records, cleaned)
 		pub := ExtractPublicKey(cleaned)
 		if pub != "" && pub == expectedClean {
@@ -122,6 +121,19 @@ func CheckDNS(ctx context.Context, domain, selector, expectedPublicB64 string) (
 	}
 
 	return res, nil
+}
+
+func uniqueRecords(raw []string) []string {
+	var out []string
+	seen := make(map[string]bool, len(raw))
+	for _, r := range raw {
+		cleaned := CleanTXTRecord(r)
+		if !seen[cleaned] {
+			seen[cleaned] = true
+			out = append(out, cleaned)
+		}
+	}
+	return out
 }
 
 func queryDoH(ctx context.Context, name string) ([]string, int, error) {

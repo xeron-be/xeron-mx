@@ -9,10 +9,12 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/emersion/go-smtp"
+	"github.com/pires/go-proxyproto"
 
 	"github.com/xeron-be/xeron-mx/internal/blob"
 	"github.com/xeron-be/xeron-mx/internal/clamav"
@@ -20,6 +22,7 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/filter"
 	"github.com/xeron-be/xeron-mx/internal/maintenance"
 	"github.com/xeron-be/xeron-mx/internal/metrics"
+	"github.com/xeron-be/xeron-mx/internal/proxy"
 	"github.com/xeron-be/xeron-mx/internal/spam"
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
@@ -56,6 +59,7 @@ func newHarness(t *testing.T) *harness {
 	cfg := config.Default()
 	cfg.SMTP.Hostname = "mx-test.example"
 	cfg.SMTP.MaxMessageBytes = 1 << 20
+	cfg.Queue.MinFreeDiskBytes = 0
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	filters := filter.New(db, log)
@@ -190,8 +194,45 @@ func TestAcceptsAndSpoolsMailForConfiguredDomain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != body {
-		t.Errorf("spooled body differs from what was sent:\ngot  %q\nwant %q", got, body)
+	trace := "Received: from client.example ([127.0.0.1])\r\n" +
+		"\tby mx-test.example (XeronMX) with ESMTP id " + m.ID + "\r\n" +
+		"\tfor <user@known.example>; "
+	if !strings.HasPrefix(string(got), trace) {
+		t.Errorf("spooled body does not start with the trace header:\ngot  %q\nwant %q...", got, trace)
+	}
+	if !strings.HasSuffix(string(got), "\r\n"+body) {
+		t.Errorf("spooled body differs from what was sent after the trace header:\ngot  %q\nwant ...%q", got, body)
+	}
+	if m.SizeBytes != int64(len(got)) {
+		t.Errorf("size = %d, want %d including the trace header", m.SizeBytes, len(got))
+	}
+}
+
+func TestRefusesAMessageThatLoopedTooManyTimes(t *testing.T) {
+	h := newHarness(t)
+	domainID := h.addDomain(t, "known.example", true)
+
+	var hops strings.Builder
+	for i := 0; i < 49; i++ {
+		hops.WriteString("Received: from a by b; Wed, 23 Sep 2026 14:57:57 +0000\r\n")
+	}
+	if err := h.send(t, "a@b.example", "user@known.example", hops.String()+"Subject: 49\r\n\r\nok\r\n"); err != nil {
+		t.Fatalf("49 hops were refused: %v", err)
+	}
+
+	hops.WriteString("Received: from a by b; Wed, 23 Sep 2026 14:57:57 +0000\r\n")
+	err := h.send(t, "a@b.example", "user@known.example", hops.String()+"Subject: 50\r\n\r\nloop\r\n")
+	var se *smtp.SMTPError
+	if !asSMTPError(err, &se) || se.Code != 554 || se.EnhancedCode != (smtp.EnhancedCode{5, 4, 6}) {
+		t.Fatalf("50 hops: err = %v; want 554 5.4.6", err)
+	}
+
+	msgs, err := h.db.ListMessages(context.Background(), store.ListFilter{DomainID: domainID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("spooled %d messages, want only the 49-hop one", len(msgs))
 	}
 }
 
@@ -596,5 +637,173 @@ func TestDiskGuardReturns452(t *testing.T) {
 	err = h.send(t, "sender@outside.test", "user@example.test", "Subject: test\r\n\r\nbody\r\n")
 	if err != nil {
 		t.Fatalf("expected success when disk is above threshold, got: %v", err)
+	}
+}
+
+type notified struct {
+	mu     sync.Mutex
+	events []map[string]any
+}
+
+func (n *notified) Notify(event string, payload map[string]any) {
+	if event != store.EventQueueFull {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.events = append(n.events, payload)
+}
+
+func TestADomainAtItsCeilingIsRefusedAndReported(t *testing.T) {
+	h := newHarness(t)
+	n := &notified{}
+	h.srv.notify = n
+	ceiling := int64(1)
+	id, err := h.db.CreateDomain(context.Background(), &store.Domain{
+		Name: "capped.example", PrimaryHost: "mail.capped.example", PrimaryPort: 25,
+		PrimaryTLS: "none", RetentionHours: 168, Enabled: true, MaxQueueMessages: &ceiling,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.addDomain(t, "open.example", true)
+
+	if err := h.send(t, "a@b.example", "user@capped.example", "Subject: 1\r\n\r\nx\r\n"); err != nil {
+		t.Fatalf("first message refused: %v", err)
+	}
+	err = h.send(t, "a@b.example", "user@capped.example", "Subject: 2\r\n\r\nx\r\n")
+	var se *smtp.SMTPError
+	if !asSMTPError(err, &se) || se.Code != 452 {
+		t.Fatalf("second message: %v; want 452 at the domain's ceiling", err)
+	}
+	if err := h.send(t, "a@b.example", "user@open.example", "Subject: 3\r\n\r\nx\r\n"); err != nil {
+		t.Fatalf("another domain was refused: %v", err)
+	}
+
+	n.mu.Lock()
+	got := n.events
+	n.mu.Unlock()
+	if len(got) != 1 || got[0]["reason"] != "domain_cap" || got[0]["domain"] != "capped.example" {
+		t.Fatalf("notifications = %v; want one domain_cap for capped.example", got)
+	}
+	events, err := h.db.ListEventsForDomains(context.Background(), []int64{id}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		found = found || e.Type == store.EventQueueFull
+	}
+	if !found {
+		t.Fatal("the refusal is not on the domain's timeline")
+	}
+}
+
+func TestTheMalwareScanOutcomeIsRecordedOnTheMessage(t *testing.T) {
+	clean, stopClean := startMockClamAVServer(t, "stream: OK\x00")
+	defer stopClean()
+	infected, stopInfected := startMockClamAVServer(t, "stream: Win.Test.EICAR_HDB-1 FOUND\x00")
+	defer stopInfected()
+	down, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreachable := down.Addr().String()
+	down.Close()
+
+	big := "Subject: big\r\n\r\n" + strings.Repeat(strings.Repeat("x", 70)+"\r\n", 60)
+	cases := []struct {
+		name, addr, body, want string
+		maxSize                int64
+	}{
+		{"clean", clean, "Subject: fine\r\n\r\nhello\r\n", "clean", 0},
+		{"infected and quarantined", infected, "Subject: bad\r\n\r\nx\r\n", "infected: Win.Test.EICAR_HDB-1", 0},
+		{"too large to scan", unreachable, big, "skipped: larger than 1024 bytes", 1024},
+		{"clamd unreachable", unreachable, "Subject: fine\r\n\r\nhello\r\n", "failed: ", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			domainID := h.addDomain(t, "example.test", true)
+			h.srv.SetClamAV(clamav.New(config.ClamAVConfig{
+				Enabled: true, Addr: c.addr, Timeout: time.Second, Action: "quarantine", MaxSizeBytes: c.maxSize,
+			}))
+
+			if err := h.send(t, "a@outside.test", "user@example.test", c.body); err != nil {
+				t.Fatalf("the message was refused: %v; a scan outcome must never cost the mail", err)
+			}
+			msgs, err := h.db.ListMessages(context.Background(), store.ListFilter{DomainID: domainID})
+			if err != nil || len(msgs) != 1 {
+				t.Fatalf("ListMessages = %d, %v", len(msgs), err)
+			}
+			if !strings.HasPrefix(msgs[0].MalwareScan, c.want) {
+				t.Fatalf("malware_scan = %q; want %q...", msgs[0].MalwareScan, c.want)
+			}
+		})
+	}
+}
+
+func TestMailThroughATrustedBalancerKeepsTheClientAddress(t *testing.T) {
+	h := newHarness(t)
+	domainID := h.addDomain(t, "known.example", true)
+
+	trusted, err := proxy.ParseTrusted([]string{"127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go h.srv.srv.Serve(proxy.Listen(ln, trusted))
+
+	conn, err := net.DialTimeout("tcp", ln.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	hdr := &proxyproto.Header{
+		Version: 2, Command: proxyproto.PROXY, TransportProtocol: proxyproto.TCPv4,
+		SourceAddr:      &net.TCPAddr{IP: net.ParseIP("203.0.113.7"), Port: 40123},
+		DestinationAddr: &net.TCPAddr{IP: net.ParseIP("198.51.100.1"), Port: 25},
+	}
+	if _, err := hdr.WriteTo(conn); err != nil {
+		t.Fatal(err)
+	}
+	c := smtp.NewClient(conn)
+	defer c.Close()
+	if err := c.Hello("client.example"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Mail("a@b.example", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Rcpt("user@known.example", nil); err != nil {
+		t.Fatal(err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(w, "Subject: via the balancer\r\n\r\nhello\r\n")
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs, err := h.db.ListMessages(context.Background(), store.ListFilter{DomainID: domainID})
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("ListMessages = %d, %v", len(msgs), err)
+	}
+	if msgs[0].RemoteAddr != "203.0.113.7:40123" {
+		t.Fatalf("remote address = %q; want the client's, not the balancer's", msgs[0].RemoteAddr)
+	}
+	rc, err := h.blobs.Get(msgs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	body, _ := io.ReadAll(rc)
+	if !strings.HasPrefix(string(body), "Received: from client.example ([203.0.113.7])") {
+		t.Fatalf("trace header = %q", string(body)[:80])
 	}
 }

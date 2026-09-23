@@ -297,6 +297,24 @@ function Detail({ message, canEdit }: { message: Message; canEdit: boolean }) {
                     {message.spam_score != null && ` (score ${message.spam_score})`}
                 </div>
             )}
+            {message.auth_results && (
+                <div>
+                    <strong>{t("queue.authentication")}</strong>{" "}
+                    <span className="mono">{message.auth_results}</span>{" "}
+                    ({message.sender_authenticated ? t("queue.authenticated") : t("queue.notAuthenticated")})
+                </div>
+            )}
+            {message.malware_scan && (
+                <div>
+                    <strong>{t("queue.malwareScan")}</strong>{" "}
+                    <span
+                        className="mono"
+                        style={message.malware_scan === "clean" ? undefined : { color: "var(--bad)" }}
+                    >
+                        {message.malware_scan}
+                    </span>
+                </div>
+            )}
             <div>
                 <strong>{t("queue.expires")}</strong> {absolute(message.expires_at)} ({relative(message.expires_at)})
             </div>

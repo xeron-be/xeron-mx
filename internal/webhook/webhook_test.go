@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -44,10 +46,11 @@ func newDispatcher(t *testing.T) (*Dispatcher, *store.DB, *blob.Store) {
 func TestSignMatchesTheDocumentedConstruction(t *testing.T) {
 	body := []byte(`{"event":"mail_received"}`)
 	mac := hmac.New(sha256.New, []byte("s3cret"))
+	mac.Write([]byte("1790186400."))
 	mac.Write(body)
 	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
-	if got := Sign([]byte("s3cret"), body); got != want {
+	if got := Sign([]byte("s3cret"), 1790186400, body); got != want {
 		t.Fatalf("Sign = %q, want %q: receivers implement this from the README", got, want)
 	}
 }
@@ -56,11 +59,12 @@ func TestPostSignsWithTheSubscriptionSecret(t *testing.T) {
 	d, db, blobs := newDispatcher(t)
 	ctx := context.Background()
 
-	var gotSig, gotEvent, gotAttempt string
+	var gotSig, gotTS, gotEvent, gotAttempt string
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
 		gotSig = r.Header.Get(SignatureHeader)
+		gotTS = r.Header.Get(TimestampHeader)
 		gotEvent = r.Header.Get(EventHeader)
 		gotAttempt = r.Header.Get(AttemptHeader)
 	}))
@@ -84,8 +88,8 @@ func TestPostSignsWithTheSubscriptionSecret(t *testing.T) {
 		t.Fatalf("post = %d, %v", code, err)
 	}
 
-	if want := Sign([]byte("the signing secret"), gotBody); gotSig != want {
-		t.Fatalf("SECURITY: the signature does not match the body\n got %q\nwant %q", gotSig, want)
+	if err := verify([]byte("the signing secret"), gotTS, gotSig, gotBody, time.Now()); err != nil {
+		t.Fatalf("SECURITY: a receiver following the README rejects the delivery: %v (timestamp %q, signature %q)", err, gotTS, gotSig)
 	}
 	if gotEvent != store.EventMailReceived {
 		t.Errorf("%s = %q", EventHeader, gotEvent)
@@ -522,4 +526,81 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 	if elsewhere.Load() {
 		t.Fatal("SECURITY: the payload followed a redirect to another host")
 	}
+}
+
+func TestVerifyRejectsReplaysAndTampering(t *testing.T) {
+	secret := []byte("s3cret")
+	body := []byte(`{"event":"mail_received","id":1}`)
+	now := time.Unix(1790186400, 0)
+	ts := strconv.FormatInt(now.Unix(), 10)
+	sig := Sign(secret, now.Unix(), body)
+
+	if err := verify(secret, ts, sig, body, now.Add(time.Minute)); err != nil {
+		t.Fatalf("a fresh delivery was rejected: %v", err)
+	}
+	cases := map[string]struct {
+		ts, sig string
+		body    []byte
+		now     time.Time
+		want    error
+	}{
+		"replayed ten minutes later": {ts, sig, body, now.Add(10 * time.Minute), errStale},
+		"timestamp in the future":    {ts, sig, body, now.Add(-10 * time.Minute), errStale},
+		"timestamp rewritten":        {strconv.FormatInt(now.Unix()+60, 10), sig, body, now, errBadSignature},
+		"body altered":               {ts, sig, []byte(`{"event":"mail_received","id":2}`), now, errBadSignature},
+		"wrong secret":               {ts, Sign([]byte("other"), now.Unix(), body), body, now, errBadSignature},
+		"no timestamp":               {"", sig, body, now, errUnsigned},
+		"no signature":               {ts, "", body, now, errUnsigned},
+	}
+	for name, c := range cases {
+		if err := verify(secret, c.ts, c.sig, c.body, c.now); !errors.Is(err, c.want) {
+			t.Errorf("%s: Verify = %v, want %v", name, err, c.want)
+		}
+	}
+}
+
+func TestEveryDeliveryCarriesATimestamp(t *testing.T) {
+	d, db, _ := newDispatcher(t)
+	ctx := context.Background()
+	var ts string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ts = r.Header.Get(TimestampHeader)
+	}))
+	defer srv.Close()
+	id, err := db.CreateWebhook(ctx, &store.Webhook{Name: "open", URL: srv.URL, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook, _ := db.Webhook(ctx, id)
+	if _, err := d.post(ctx, hook, &store.Delivery{ID: 1, EventType: store.EventMailReceived, Payload: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := strconv.ParseInt(ts, 10, 64); err != nil || time.Since(time.Unix(n, 0)) > time.Minute {
+		t.Fatalf("%s = %q; want the send time even without a secret", TimestampHeader, ts)
+	}
+}
+
+const maxSkew = 5 * time.Minute
+
+var (
+	errUnsigned     = errors.New("no signature or timestamp")
+	errStale        = errors.New("timestamp outside the accepted window")
+	errBadSignature = errors.New("signature does not match")
+)
+
+func verify(secret []byte, timestamp, signature string, body []byte, now time.Time) error {
+	if timestamp == "" || signature == "" {
+		return errUnsigned
+	}
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return errUnsigned
+	}
+	if skew := now.Sub(time.Unix(ts, 0)); skew > maxSkew || skew < -maxSkew {
+		return errStale
+	}
+	if !hmac.Equal([]byte(signature), []byte(Sign(secret, ts, body))) {
+		return errBadSignature
+	}
+	return nil
 }
