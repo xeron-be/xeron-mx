@@ -86,6 +86,14 @@ Open `http://your-host:8080` in your browser. The setup wizard guides you throug
 
 Once an administrator account is registered, the setup wizard locks permanently.
 
+**Image tags.** The image is published for `linux/amd64` and `linux/arm64`:
+
+| Tag | What it is |
+|-----|------------|
+| `latest` | The newest stable release. This is what `docker-compose.yml` pulls. |
+| `1.2.0`, `1.2` | A specific release, or the newest patch of a minor version. Pin one of these in production. |
+| `edge`, `sha-<commit>` | The current `main` branch, rebuilt on every push. For testing only. |
+
 ### 2. Scripting with the REST API
 
 All web dashboard capabilities are accessible through the REST API. You can use a session cookie jar or an API token:
@@ -160,7 +168,7 @@ Multiple XeronMX nodes operate in a shared-nothing model behind equal-priority M
 
 ## Command Line Client (`xeronmxctl`)
 
-The companion binary `xeronmxctl` ships alongside the daemon and is embedded in the Docker container image:
+The companion binary `xeronmxctl` ships alongside the daemon and is embedded in the Docker container image. Standalone builds for Linux, macOS and Windows (amd64 and arm64) are attached to every [release](https://github.com/xeron-be/xeron-mx/releases):
 
 ```bash
 # Authenticate:

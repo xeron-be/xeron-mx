@@ -20,7 +20,10 @@ Run the automated test suite locally:
 
 ```bash
 make check     # runs gofmt, go vet, and the full test suite with -race
+make ui-test   # the admin UI's tests (needs Node and `npm ci` in web/)
 ```
+
+`make ui-test` also checks that every API error code and event type the Go code emits has a label in the UI, so run it after adding either.
 
 Key guidelines for contributions:
 
@@ -28,6 +31,18 @@ Key guidelines for contributions:
 - **New behavior requires tests.** Provide thorough unit and integration coverage, especially in `internal/smtpd`, `internal/store`, and `internal/blob`.
 - **No unnecessary dependencies.** Dependencies introduce maintenance overhead and security attack surface for mail infrastructure.
 - **Use `modernc.org/sqlite`, not `mattn/go-sqlite3`.** The pure-Go driver keeps the binary static and the container image minimal. Avoid introducing CGO dependencies.
+
+## Releases
+
+Nothing is tagged by hand. `.github/workflows/release.yml` does it all, from `main` only:
+
+- **Every push to `main`** runs the full CI, then replaces the `edge` pre-release (binaries attached) and pushes the image as `:edge` and `:sha-<commit>`. Commits that only touch Markdown are skipped.
+- **A versioned release** is started from the Actions tab: *Release* → *Run workflow*, with the version (for example `1.2.0`). Before that, on `main`:
+  1. rename `## [Unreleased]` in `CHANGELOG.md` to `## [1.2.0] - <date>`, open a new empty `## [Unreleased]` above it, and update the link references at the bottom;
+  2. set `version` and `appVersion` in `deploy/helm/xeronmx/Chart.yaml` to `1.2.0`.
+
+  The workflow refuses to run if the tag already exists, if the changelog has no section for that version, or if the chart still points at another one. It then tags the exact commit it tested, publishes the release with that changelog section as its notes, and pushes `:1.2.0`, `:1.2` and `:latest`.
+- **A pre-release** is the same, with *pre-release* ticked or a version such as `1.2.0-rc.1`. It gets only its own image tag: `:latest` stays on the last stable release. The chart check is skipped.
 
 ## Three non-negotiable design principles
 

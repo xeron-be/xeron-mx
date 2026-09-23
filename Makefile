@@ -17,6 +17,12 @@ ui:
 	rm -rf internal/ui/dist/assets internal/ui/dist/index.html
 	cd web && npm ci --no-audit --no-fund && npm run build
 
+# Also checks the UI's translations against the error codes and event types
+# the Go code emits, so run it after changing either side.
+.PHONY: ui-test
+ui-test:
+	cd web && npm test
+
 .PHONY: build
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
