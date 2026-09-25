@@ -269,3 +269,17 @@ func TestProxyProtocolRangesFromTheEnvironment(t *testing.T) {
 		t.Fatalf("proxy_protocol_trusted = %v", c.SMTP.ProxyProtocolTrusted)
 	}
 }
+
+func TestPrivateDestinationsAreRefusedUnlessAllowed(t *testing.T) {
+	if Default().Queue.AllowPrivateDestinations {
+		t.Fatal("private destinations are allowed by default")
+	}
+	t.Setenv("XERONMX_QUEUE_ALLOW_PRIVATE_DESTINATIONS", "true")
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Queue.AllowPrivateDestinations {
+		t.Fatal("XERONMX_QUEUE_ALLOW_PRIVATE_DESTINATIONS=true was ignored")
+	}
+}

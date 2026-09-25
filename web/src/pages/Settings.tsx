@@ -12,6 +12,7 @@ import { relative } from "../format";
 import { Alert, Card, Empty, PageHead, Pill } from "../components/ui";
 import { useAsync } from "../useAsync";
 import { useT, type TFunction } from "../i18n";
+import { Account } from "./Account";
 import type { TranslationKey } from "../locales/en";
 
 export function Settings({
@@ -30,14 +31,19 @@ export function Settings({
         <>
             <PageHead title={t("settings.title")} subtitle={t("settings.subtitle")} />
             <div className="stack">
-                <Operators
-                    refreshKey={refreshKey}
-                    canEdit={canEdit}
-                    currentUserEmail={currentUserEmail}
-                    onChanged={onChanged}
-                />
-                <Webhooks refreshKey={refreshKey} canEdit={canEdit} onChanged={onChanged} />
-                <Tokens refreshKey={refreshKey} canEdit={canEdit} onChanged={onChanged} />
+                <Account refreshKey={refreshKey} />
+                {canEdit && (
+                    <>
+                        <Operators
+                            refreshKey={refreshKey}
+                            canEdit={canEdit}
+                            currentUserEmail={currentUserEmail}
+                            onChanged={onChanged}
+                        />
+                        <Webhooks refreshKey={refreshKey} canEdit={canEdit} onChanged={onChanged} />
+                        <Tokens refreshKey={refreshKey} canEdit={canEdit} onChanged={onChanged} />
+                    </>
+                )}
             </div>
         </>
     );
@@ -77,6 +83,17 @@ function Operators({
         setError("");
         try {
             await api.updateUserRole(op.id, newRole);
+            onChanged();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : t("operators.couldNotUpdate"));
+        }
+    }
+
+    async function resetTOTP(op: UserAccount) {
+        if (!confirm(t("operators.resetTotpConfirm", { email: op.email }))) return;
+        setError("");
+        try {
+            await api.updateUser(op.id, { reset_totp: true });
             onChanged();
         } catch (err) {
             setError(err instanceof Error ? err.message : t("operators.couldNotUpdate"));
@@ -140,6 +157,7 @@ function Operators({
                                 <th>{t("operators.thRole")}</th>
                                 <th>{t("operators.thDomains")}</th>
                                 <th>{t("operators.thSource")}</th>
+                                <th>{t("operators.th2fa")}</th>
                                 <th>{t("operators.thSince")}</th>
                                 {canEdit && <th />}
                             </tr>
@@ -241,6 +259,26 @@ function Operators({
                                         </td>
                                         <td>
                                             <Pill tone="mute">{sourceLabel(op)}</Pill>
+                                        </td>
+                                        <td>
+                                            {op.has_password ? (
+                                                <div className="row" style={{ gap: ".3rem", alignItems: "center" }}>
+                                                    <Pill tone={op.totp_enabled ? "ok" : "mute"}>
+                                                        {op.totp_enabled ? t("operators.totpOn") : t("operators.totpOff")}
+                                                    </Pill>
+                                                    {canEdit && !isSelf && op.totp_enabled && (
+                                                        <button
+                                                            className="btn-sm"
+                                                            style={{ padding: "0 .4rem", fontSize: ".75rem" }}
+                                                            onClick={() => resetTOTP(op)}
+                                                        >
+                                                            {t("operators.resetTotp")}
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <span className="hint">—</span>
+                                            )}
                                         </td>
                                         <td>{relative(op.created_at)}</td>
                                         {canEdit && (

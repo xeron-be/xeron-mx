@@ -6,6 +6,55 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Two-step verification for panel accounts: TOTP codes from any authenticator
+  app (RFC 6238), turned on from Settings with a QR code, with ten single-use
+  recovery codes shown once. The secret is sealed with the master key, a code
+  is refused once used, and codes go through the login rate limit. Admins can
+  reset another account's second factor, not their own. OIDC accounts and API
+  tokens are unaffected
+- Password change for the signed-in account, in Settings. It needs the current
+  password and ends the account's other sessions. Settings now opens for every
+  role, showing non-admins their own account only
+- Database schema v9 (three columns on `users`, table `totp_recovery_codes`),
+  applied automatically on start
+
+### Security
+
+- Domain scoping leaked across tenants. An account restricted with
+  `allowed_domains` received every other domain's traffic on the live stream
+  (`/api/v1/live` carried the domain and subject of each message received, for
+  all domains), and could read the node-wide settings: submission accounts,
+  outbound routes, content filters, webhooks and their delivery log, and the
+  cluster. The live stream is now filtered per account, and those listings
+  answer such an account with 403 `domain_scoped`. The panel hides the
+  matching tabs. Admins, and accounts without `allowed_domains`, are unaffected
+- A primary could point inside the host. Whoever creates a domain chooses its
+  primary, so `127.0.0.1`, a private address or `169.254.169.254` made delivery,
+  health probes and the connectivity test talk SMTP to services on the host or
+  its network; in direct mode, a sender's MX could do the same for bounces.
+  These destinations are now refused, on the address actually dialled after DNS
+  resolution, so a public name later pointed inside is caught too. Relays and
+  alert sinks, which only the admin sets, are unaffected
+- Drain mode is admin-only. Any operator could enter it, including one scoped
+  to a single domain, and drain refuses mail for every domain on the node.
+  Reading the drain state stays open to operators
+
+### Fixed
+
+- `docker-compose.yml` pulled rspamd from `ghcr.io/rspamd/rspamd`, which the
+  registry refuses, so `--profile spam` never started. It now uses the official
+  `rspamd/rspamd` image from Docker Hub
+
+### Changed
+
+- A node whose primary is on a private network (LAN, VPN, the same Kubernetes
+  cluster) must now set `queue.allow_private_destinations: true`
+  (`XERONMX_QUEUE_ALLOW_PRIVATE_DESTINATIONS`, Helm
+  `queue.allowPrivateDestinations`). Until then its messages stay queued with
+  an error naming the setting, and the connectivity test says the same
+
 ## [1.0.0] - 2026-09-23
 
 First public release. XeronMX was built over a series of internal milestones
@@ -22,7 +71,7 @@ otherwise take for an accident.
 - Encrypted spool: AES-256-GCM in a streaming construction, per-file keys derived
   with HKDF-SHA256, with truncation and tampering detection
 - SQLite persistence with embedded schema and `user_version` migrations, from
-  the initial schema through v7
+  the initial schema through v8
 - Queue with atomic multi-worker claim, exponential backoff with jitter,
   retention expiry, and recovery of claims orphaned by a crash
 - Primary health checking over a real SMTP handshake, with separate failure and

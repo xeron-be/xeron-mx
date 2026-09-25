@@ -21,10 +21,18 @@ type User struct {
 
 	OIDCIssuer  string
 	OIDCSubject string
+
+	TOTPSecret   string
+	TOTPEnabled  bool
+	TOTPLastStep int64
+}
+
+func (u *User) Scoped() bool {
+	return u.Role != RoleAdmin && len(u.AllowedDomains) > 0
 }
 
 func (u *User) CanAccessDomain(domainName string) bool {
-	if u.Role == RoleAdmin || len(u.AllowedDomains) == 0 {
+	if !u.Scoped() {
 		return true
 	}
 	for _, d := range u.AllowedDomains {
@@ -36,7 +44,7 @@ func (u *User) CanAccessDomain(domainName string) bool {
 }
 
 func (u *User) CanAccessDomainID(ctx context.Context, db *DB, domainID int64) (bool, error) {
-	if u.Role == RoleAdmin || len(u.AllowedDomains) == 0 {
+	if !u.Scoped() {
 		return true, nil
 	}
 	d, err := db.DomainByID(ctx, domainID)
@@ -200,7 +208,8 @@ func (db *DB) DeleteUser(ctx context.Context, id int64) error {
 }
 
 const userCols = `
-	SELECT id, email, password_hash, role, allowed_domains, created_at, last_login_at, oidc_issuer, oidc_subject
+	SELECT id, email, password_hash, role, allowed_domains, created_at, last_login_at, oidc_issuer, oidc_subject,
+	       totp_secret, totp_enabled, totp_last_step
 	FROM users`
 
 func (db *DB) scanUser(row rowScanner) (*User, error) {
@@ -213,7 +222,7 @@ func (db *DB) scanUser(row rowScanner) (*User, error) {
 		subject        sql.NullString
 	)
 	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &allowedDomains, &created, &lastLogin,
-		&issuer, &subject)
+		&issuer, &subject, &u.TOTPSecret, &u.TOTPEnabled, &u.TOTPLastStep)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -249,7 +258,7 @@ func (db *DB) CreateSession(ctx context.Context, tokenHash string, userID int64,
 func (db *DB) UserBySessionToken(ctx context.Context, tokenHash string) (*User, error) {
 	return db.scanUser(db.QueryRowContext(ctx, `
 		SELECT u.id, u.email, u.password_hash, u.role, u.allowed_domains, u.created_at, u.last_login_at,
-		       u.oidc_issuer, u.oidc_subject
+		       u.oidc_issuer, u.oidc_subject, u.totp_secret, u.totp_enabled, u.totp_last_step
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`,

@@ -259,6 +259,8 @@ type QueueConfig struct {
 	DeliveryTimeout time.Duration `yaml:"delivery_timeout"`
 
 	Bounces string `yaml:"bounces"`
+
+	AllowPrivateDestinations bool `yaml:"allow_private_destinations"`
 }
 
 const (
@@ -439,6 +441,7 @@ func applyEnv(cfg *Config) {
 	boolean("XERONMX_MAINTENANCE_DRAIN", &cfg.Maintenance.Drain)
 	dur("XERONMX_QUEUE_RETENTION", &cfg.Queue.Retention)
 	str("XERONMX_QUEUE_BOUNCES", &cfg.Queue.Bounces)
+	boolean("XERONMX_QUEUE_ALLOW_PRIVATE_DESTINATIONS", &cfg.Queue.AllowPrivateDestinations)
 	dur("XERONMX_HEALTH_INTERVAL", &cfg.Health.Interval)
 	str("XERONMX_LOG_LEVEL", &cfg.Log.Level)
 	str("XERONMX_LOG_FORMAT", &cfg.Log.Format)

@@ -131,6 +131,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.authed(s.handleLogout))
 	mux.HandleFunc("GET /api/v1/auth/me", s.authed(s.handleMe))
+	mux.HandleFunc("POST /api/v1/auth/password", s.authed(s.handleChangePassword))
+	mux.HandleFunc("POST /api/v1/auth/totp/setup", s.authed(s.handleTOTPSetup))
+	mux.HandleFunc("POST /api/v1/auth/totp/enable", s.authed(s.handleTOTPEnable))
+	mux.HandleFunc("POST /api/v1/auth/totp/disable", s.authed(s.handleTOTPDisable))
+	mux.HandleFunc("POST /api/v1/auth/totp/recovery-codes", s.authed(s.handleTOTPRecoveryCodes))
 
 	mux.HandleFunc("GET /api/v1/status", s.authed(s.handleStatus))
 	mux.HandleFunc("GET /api/v1/domains", s.authed(s.handleListDomains))
@@ -141,7 +146,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/queue", s.authed(s.handleListQueue))
 	mux.HandleFunc("GET /api/v1/queue/{id}", s.authed(s.handleGetMessage))
 	mux.HandleFunc("GET /api/v1/events", s.authed(s.handleListEvents))
-	mux.HandleFunc("GET /api/v1/smtp-users", s.authed(s.handleListSMTPUsers))
+	mux.HandleFunc("GET /api/v1/smtp-users", s.fleetWide(s.handleListSMTPUsers))
 	mux.HandleFunc("GET /api/v1/live", s.authed(s.handleLive))
 
 	mux.HandleFunc("POST /api/v1/domains", s.admin(s.handleCreateDomain))
@@ -166,13 +171,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/domains/{id}/dmarc", s.authed(s.handleGetDMARC))
 	mux.HandleFunc("POST /api/v1/domains/{id}/dmarc/check", s.authed(s.handleCheckDMARC))
 
-	mux.HandleFunc("GET /api/v1/routes", s.authed(s.handleListRoutes))
+	mux.HandleFunc("GET /api/v1/routes", s.fleetWide(s.handleListRoutes))
 	mux.HandleFunc("POST /api/v1/routes", s.admin(s.handleCreateRoute))
 	mux.HandleFunc("PATCH /api/v1/routes/{id}", s.admin(s.handleUpdateRoute))
 	mux.HandleFunc("DELETE /api/v1/routes/{id}", s.admin(s.handleDeleteRoute))
-	mux.HandleFunc("GET /api/v1/routes/test", s.authed(s.handleTestRoute))
+	mux.HandleFunc("GET /api/v1/routes/test", s.fleetWide(s.handleTestRoute))
 
-	mux.HandleFunc("GET /api/v1/filters", s.authed(s.handleListFilters))
+	mux.HandleFunc("GET /api/v1/filters", s.fleetWide(s.handleListFilters))
 	mux.HandleFunc("POST /api/v1/filters", s.admin(s.handleCreateFilter))
 	mux.HandleFunc("PATCH /api/v1/filters/{id}", s.admin(s.handleUpdateFilter))
 	mux.HandleFunc("DELETE /api/v1/filters/{id}", s.admin(s.handleDeleteFilter))
@@ -194,9 +199,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/users/{id}", s.admin(s.handleUpdateUser))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", s.admin(s.handleDeleteUser))
 
-	mux.HandleFunc("GET /api/v1/webhooks", s.authed(s.handleListWebhooks))
+	mux.HandleFunc("GET /api/v1/webhooks", s.fleetWide(s.handleListWebhooks))
 	mux.HandleFunc("GET /api/v1/webhooks/events", s.authed(s.handleWebhookEventTypes))
-	mux.HandleFunc("GET /api/v1/webhooks/deliveries", s.authed(s.handleListDeliveries))
+	mux.HandleFunc("GET /api/v1/webhooks/deliveries", s.fleetWide(s.handleListDeliveries))
 	mux.HandleFunc("POST /api/v1/webhooks", s.admin(s.handleCreateWebhook))
 	mux.HandleFunc("PATCH /api/v1/webhooks/{id}", s.admin(s.handleUpdateWebhook))
 	mux.HandleFunc("DELETE /api/v1/webhooks/{id}", s.admin(s.handleDeleteWebhook))
@@ -205,14 +210,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/oidc/login", s.handleOIDCLogin)
 	mux.HandleFunc("GET /api/v1/auth/oidc/callback", s.handleOIDCCallback)
 
-	mux.HandleFunc("GET /api/v1/cluster", s.authed(s.handleClusterState))
+	mux.HandleFunc("GET /api/v1/cluster", s.fleetWide(s.handleClusterState))
 	mux.HandleFunc("DELETE /api/v1/cluster/nodes/{id}", s.admin(s.handleForgetNode))
 
 	mux.HandleFunc("POST "+cluster.HeartbeatPath, s.handleHeartbeat)
 	mux.HandleFunc("GET "+cluster.ConfigPath, s.handleClusterConfig)
 
 	mux.HandleFunc("GET /api/v1/maintenance/drain", s.operator(s.handleGetDrain))
-	mux.HandleFunc("POST /api/v1/maintenance/drain", s.operator(s.handleSetDrain))
+	mux.HandleFunc("POST /api/v1/maintenance/drain", s.admin(s.handleSetDrain))
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
@@ -343,12 +348,22 @@ func (s *Server) operator(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+func (s *Server) fleetWide(next http.HandlerFunc) http.HandlerFunc {
+	return s.authed(func(w http.ResponseWriter, r *http.Request) {
+		if u := userFrom(r); u != nil && u.Scoped() {
+			s.fail(w, r, http.StatusForbidden, ErrDomainScoped)
+			return
+		}
+		next(w, r)
+	})
+}
+
 func (s *Server) domainsForUser(ctx context.Context, u *store.User) ([]*store.Domain, error) {
 	all, err := s.db.ListDomains(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if u == nil || u.Role == store.RoleAdmin || len(u.AllowedDomains) == 0 {
+	if u == nil || !u.Scoped() {
 		return all, nil
 	}
 	allowedMap := make(map[string]bool, len(u.AllowedDomains))
@@ -365,7 +380,7 @@ func (s *Server) domainsForUser(ctx context.Context, u *store.User) ([]*store.Do
 }
 
 func (s *Server) allowedDomainIDsForUser(ctx context.Context, u *store.User) ([]int64, error) {
-	if u == nil || u.Role == store.RoleAdmin || len(u.AllowedDomains) == 0 {
+	if u == nil || !u.Scoped() {
 		return nil, nil
 	}
 	domains, err := s.domainsForUser(ctx, u)

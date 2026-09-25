@@ -36,7 +36,10 @@ var schemaV7SQL string
 //go:embed schema_v8.sql
 var schemaV8SQL string
 
-const schemaVersion = 8
+//go:embed schema_v9.sql
+var schemaV9SQL string
+
+const schemaVersion = 9
 
 type DB struct {
 	*sql.DB
@@ -134,6 +137,11 @@ func (db *DB) migrate(ctx context.Context) error {
 	if current < 8 {
 		if _, err := tx.ExecContext(ctx, schemaV8SQL); err != nil {
 			return fmt.Errorf("store: apply schema v8: %w", err)
+		}
+	}
+	if current < 9 {
+		if _, err := tx.ExecContext(ctx, schemaV9SQL); err != nil {
+			return fmt.Errorf("store: apply schema v9: %w", err)
 		}
 	}
 

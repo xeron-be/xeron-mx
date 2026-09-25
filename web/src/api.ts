@@ -6,6 +6,7 @@ export class ApiError extends Error {
     constructor(
         message: string,
         readonly status: number,
+        readonly code: string = "",
     ) {
         super(message);
     }
@@ -37,7 +38,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
                 ? String((body as { error: unknown }).error)
                 : "";
         const message = translateApiError(raw) || raw || `Request failed (${res.status})`;
-        throw new ApiError(message, res.status);
+        throw new ApiError(message, res.status, raw);
     }
     return body as T;
 }
@@ -60,6 +61,14 @@ export interface User {
     last_login_at?: string | null;
     from_directory?: boolean;
     has_password?: boolean;
+    totp_enabled?: boolean;
+    recovery_codes_left?: number;
+}
+
+export interface TOTPSetup {
+    secret: string;
+    uri: string;
+    qr_code: string;
 }
 
 export interface UserAccount {
@@ -69,6 +78,7 @@ export interface UserAccount {
     allowed_domains?: string[];
     has_password: boolean;
     is_sso: boolean;
+    totp_enabled: boolean;
     created_at: string;
     last_login_at?: string | null;
 }
@@ -386,7 +396,16 @@ export const api = {
     setupStatus: () => request<SetupStatus>("/setup"),
     setup: (email: string, password: string) => post<User>("/setup", { email, password }),
 
-    login: (email: string, password: string) => post<User>("/auth/login", { email, password }),
+    login: (email: string, password: string, code?: string) =>
+        post<User>("/auth/login", code ? { email, password, code } : { email, password }),
+    changePassword: (current_password: string, new_password: string) =>
+        post<{ changed: boolean }>("/auth/password", { current_password, new_password }),
+    totpSetup: (password: string) => post<TOTPSetup>("/auth/totp/setup", { password }),
+    totpEnable: (code: string) => post<{ recovery_codes: string[] }>("/auth/totp/enable", { code }),
+    totpDisable: (password: string, code: string) =>
+        post<{ enabled: boolean }>("/auth/totp/disable", { password, code }),
+    totpRecoveryCodes: (password: string, code: string) =>
+        post<{ recovery_codes: string[] }>("/auth/totp/recovery-codes", { password, code }),
     logout: () => post<{ status: string }>("/auth/logout"),
     me: () => request<User>("/auth/me"),
 
@@ -497,7 +516,7 @@ export const api = {
     listUsers: () => request<{ users: UserAccount[] }>("/users"),
     createUser: (body: { email: string; role: string; password?: string; allowed_domains?: string[] }) =>
         post<UserAccount>("/users", body),
-    updateUser: (id: number, body: { role?: string; allowed_domains?: string[] }) =>
+    updateUser: (id: number, body: { role?: string; allowed_domains?: string[]; reset_totp?: boolean }) =>
         request<UserAccount>(`/users/${id}`, {
             method: "PATCH",
             body: JSON.stringify(body),

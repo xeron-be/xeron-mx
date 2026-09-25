@@ -84,7 +84,7 @@ services:
   # Optional spam filter. Started only with `--profile spam`.
   # XeronMX fails open: if this container is down, mail is accepted anyway.
   rspamd:
-    image: ghcr.io/rspamd/rspamd:latest
+    image: rspamd/rspamd:latest
     container_name: xeronmx-rspamd
     restart: unless-stopped
     profiles: ["spam"]

@@ -18,6 +18,7 @@ type userJSON struct {
 	Role           string     `json:"role"`
 	AllowedDomains []string   `json:"allowed_domains"`
 	HasPassword    bool       `json:"has_password"`
+	TOTPEnabled    bool       `json:"totp_enabled"`
 	IsSSO          bool       `json:"is_sso"`
 	CreatedAt      time.Time  `json:"created_at"`
 	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
@@ -34,6 +35,7 @@ func renderUser(u *store.User) userJSON {
 		Role:           u.Role,
 		AllowedDomains: allowed,
 		HasPassword:    u.HasPassword(),
+		TOTPEnabled:    u.TOTPEnabled,
 		IsSSO:          u.FromDirectory(),
 		CreatedAt:      u.CreatedAt,
 		LastLoginAt:    u.LastLoginAt,
@@ -138,6 +140,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 type updateUserReq struct {
 	Role           string    `json:"role"`
 	AllowedDomains *[]string `json:"allowed_domains"`
+	ResetTOTP      bool      `json:"reset_totp"`
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -181,6 +184,26 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if current != nil && current.ID == id && newRole != store.RoleAdmin {
 		s.fail(w, r, http.StatusBadRequest, ErrCannotDeleteSelf)
 		return
+	}
+
+	if req.ResetTOTP && current != nil && current.ID == id {
+		s.fail(w, r, http.StatusBadRequest, ErrOwnTOTPReset)
+		return
+	}
+	if req.ResetTOTP && target.TOTPEnabled {
+		if err := s.db.DisableTOTP(r.Context(), id); err != nil {
+			s.log.Error("reset totp failed", "error", err)
+			s.fail(w, r, http.StatusInternalServerError, ErrUserUpdateFailed)
+			return
+		}
+		var by *int64
+		if current != nil {
+			by = &current.ID
+		}
+		s.db.RecordEvent(r.Context(), &store.Event{
+			Type: EventTOTPReset, UserID: by, Data: map[string]any{"user_id": id, "email": target.Email},
+		})
+		s.log.Warn("two-factor authentication reset by an admin", "email", target.Email)
 	}
 
 	err = s.db.UpdateUserScope(r.Context(), id, newRole, allowed)

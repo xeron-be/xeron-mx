@@ -120,6 +120,11 @@ queue:
   # genuine by SPF or aligned DKIM (never to the forged senders of spam).
   # off: never. Needs smtp.senderAuth for "authenticated".
   bounces: authenticated
+  # Delivery, health checks and direct sending refuse private, loopback and
+  # link-local addresses, so that whoever creates a domain cannot point it at a
+  # service inside your network. Turn on when a primary lives on a private
+  # network you trust, such as another service in this cluster.
+  allowPrivateDestinations: false
 
 health:
   interval: 30s

@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -833,4 +835,50 @@ func TestDomainAndDKIMResponsesCarryTheStoredCreationDate(t *testing.T) {
 		t.Fatalf("POST dkim returned %d: %s", rec.Code, rec.Body.String())
 	}
 	created(t, decodeBody(t, rec))
+}
+
+func TestTestingAPrivatePrimaryExplainsTheRefusal(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := a.setup(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			c.Close()
+		}
+	}()
+
+	rec := a.do(t, "POST", "/api/v1/domains", map[string]any{
+		"name": "example.com", "primary_host": "127.0.0.1",
+		"primary_port": ln.Addr().(*net.TCPAddr).Port, "primary_tls": "none",
+	}, cookie)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create returned %d: %s", rec.Code, rec.Body.String())
+	}
+	id := int64(decodeBody(t, rec)["id"].(float64))
+
+	rec = a.do(t, "POST", "/api/v1/domains/"+strconv.FormatInt(id, 10)+"/test", nil, cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("test returned %d: %s", rec.Code, rec.Body.String())
+	}
+	body := decodeBody(t, rec)
+	if body["reachable"] != false {
+		t.Fatalf("a private primary was reported reachable: %v", body)
+	}
+	if hint, _ := body["hint"].(string); !strings.Contains(hint, "queue.allow_private_destinations") {
+		t.Fatalf("hint = %q; want it to name the setting", hint)
+	}
+	if n := accepted.Load(); n != 0 {
+		t.Fatalf("the test opened %d connection(s) to the private primary", n)
+	}
 }

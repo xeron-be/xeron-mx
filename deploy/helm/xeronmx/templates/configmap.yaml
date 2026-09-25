@@ -25,7 +25,8 @@ the pod would refuse to start, on a value that looks perfectly reasonable.
     "min_free_disk_bytes" (int64 (default 1073741824 .Values.queue.minFreeDiskBytes))
     "retention" .Values.queue.retention
     "workers" (int .Values.queue.workers)
-    "bounces" (default "authenticated" .Values.queue.bounces))
+    "bounces" (default "authenticated" .Values.queue.bounces)
+    "allow_private_destinations" (default false .Values.queue.allowPrivateDestinations))
   "health" (dict
     "interval" .Values.health.interval
     "failure_threshold" (int .Values.health.failureThreshold)

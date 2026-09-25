@@ -282,3 +282,26 @@ func TestLookupMXOrdersAndReportsErrors(t *testing.T) {
 		t.Fatalf("lookupMX on a broken resolver = %v; want a temporary error", err)
 	}
 }
+
+func TestDirectDeliveryRefusesAnMXThatPointsInside(t *testing.T) {
+	inside := startPrimary(t)
+	p := startPrimary(t)
+	h := newHarness(t, p.host, p.port, 5*time.Second, func(c *config.Config) {
+		c.Outbound.Enabled = true
+		c.Outbound.Mode = "direct"
+		c.Queue.AllowPrivateDestinations = false
+	})
+	direct(h, &fakeMX{mx: map[string][]*net.MX{
+		"dest.test": {{Host: "mx.dest.test.", Pref: 10}},
+	}}, map[string]int{"mx.dest.test": inside.port})
+	id := h.enqueueMessage(testBody, 24*time.Hour, outbound, "carol@dest.test")
+
+	h.pass()
+
+	if n := inside.connections(); n != 0 {
+		t.Fatalf("an MX resolving to loopback received %d connection(s); want none", n)
+	}
+	if m := h.message(id); m.Status == store.StatusDelivered {
+		t.Fatal("the message was delivered to a private address")
+	}
+}

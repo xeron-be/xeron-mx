@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, ssoLoginURL, type SetupStatus, type User } from "../api";
+import { api, ApiError, ssoLoginURL, type SetupStatus, type User } from "../api";
 import { Alert, Card } from "../components/ui";
 import { useT } from "../i18n";
 import type { TranslationKey } from "../locales/en";
@@ -33,6 +33,8 @@ export function Auth({
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [confirm, setConfirm] = useState("");
+    const [code, setCode] = useState("");
+    const [needsCode, setNeedsCode] = useState(false);
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
     const [methods, setMethods] = useState<SetupStatus | null>(null);
@@ -54,10 +56,18 @@ export function Auth({
         try {
             const user = needsSetup
                 ? await api.setup(email, password)
-                : await api.login(email, password);
+                : await api.login(email, password, needsCode ? code : undefined);
             onAuthenticated(user);
         } catch (err) {
-            setError(err instanceof Error ? err.message : t("common.somethingWrong"));
+            if (err instanceof ApiError && err.code === "totp_required") {
+                setNeedsCode(true);
+                setCode("");
+            } else if (needsCode && err instanceof ApiError && err.code === "invalid_credentials") {
+                setError(t("auth.codeInvalid"));
+                setCode("");
+            } else {
+                setError(err instanceof Error ? err.message : t("common.somethingWrong"));
+            }
         } finally {
             setBusy(false);
         }
@@ -65,6 +75,54 @@ export function Auth({
 
     const sso = methods?.oidc?.enabled === true;
     const passwords = needsSetup || methods === null || methods.password_login !== false;
+
+    if (needsCode) {
+        return (
+            <div className="auth">
+                <Card className="auth-card">
+                    <h1>{t("auth.codeTitle")}</h1>
+                    <p>{t("auth.codeSubtitle")}</p>
+                    {error && <Alert>{error}</Alert>}
+                    <form onSubmit={submit}>
+                        <div className="field">
+                            <label htmlFor="code">{t("auth.code")}</label>
+                            <input
+                                id="code"
+                                type="text"
+                                inputMode="text"
+                                autoComplete="one-time-code"
+                                spellCheck={false}
+                                value={code}
+                                onChange={(e) => setCode(e.target.value)}
+                                required
+                                autoFocus
+                            />
+                        </div>
+                        <button
+                            type="submit"
+                            className="btn-primary"
+                            disabled={busy}
+                            style={{ width: "100%" }}
+                        >
+                            {busy ? t("common.working") : t("auth.verify")}
+                        </button>
+                        <button
+                            type="button"
+                            className="btn-sm"
+                            style={{ width: "100%", marginTop: ".5rem" }}
+                            onClick={() => {
+                                setNeedsCode(false);
+                                setCode("");
+                                setError("");
+                            }}
+                        >
+                            {t("auth.back")}
+                        </button>
+                    </form>
+                </Card>
+            </div>
+        );
+    }
 
     return (
         <div className="auth">

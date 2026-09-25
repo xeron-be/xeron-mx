@@ -18,17 +18,18 @@ type Notifier interface {
 }
 
 type Checker struct {
-	cfg    config.HealthConfig
-	db     *store.DB
-	log    *slog.Logger
-	notify Notifier
+	cfg          config.HealthConfig
+	allowPrivate bool
+	db           *store.DB
+	log          *slog.Logger
+	notify       Notifier
 
 	wake  chan<- int64
 	count *metrics.Counters
 }
 
-func New(cfg config.HealthConfig, db *store.DB, log *slog.Logger, notify Notifier, wake chan<- int64, count *metrics.Counters) *Checker {
-	return &Checker{cfg: cfg, db: db, log: log, notify: notify, wake: wake, count: count}
+func New(cfg config.HealthConfig, allowPrivate bool, db *store.DB, log *slog.Logger, notify Notifier, wake chan<- int64, count *metrics.Counters) *Checker {
+	return &Checker{cfg: cfg, allowPrivate: allowPrivate, db: db, log: log, notify: notify, wake: wake, count: count}
 }
 
 func (c *Checker) Run(ctx context.Context) {
@@ -74,7 +75,7 @@ func (c *Checker) checkAll(ctx context.Context) {
 }
 
 func (c *Checker) checkOne(ctx context.Context, d *store.Domain) {
-	probeErr := Probe(ctx, d, c.cfg.Timeout)
+	probeErr := Probe(ctx, d, c.cfg.Timeout, c.allowPrivate)
 	ok := probeErr == nil
 	c.count.ProbesTotal.Add(1)
 	if !ok {
@@ -130,11 +131,11 @@ func (c *Checker) checkOne(ctx context.Context, d *store.Domain) {
 	}
 }
 
-func Probe(ctx context.Context, d *store.Domain, timeout time.Duration) error {
+func Probe(ctx context.Context, d *store.Domain, timeout time.Duration, allowPrivate bool) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	client, err := smtpclient.Dial(ctx, d, smtpclient.HelloName(d))
+	client, err := smtpclient.Dial(ctx, d, smtpclient.HelloName(d), smtpclient.PublicOnly(!allowPrivate))
 	if err != nil {
 		return err
 	}

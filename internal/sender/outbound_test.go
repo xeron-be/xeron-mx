@@ -45,6 +45,7 @@ func newSender(t *testing.T) (*Sender, *store.DB, *blob.Store, int64) {
 	}
 
 	cfg := config.Default()
+	cfg.Queue.AllowPrivateDestinations = true
 	s := New(cfg.Queue, db, blobs, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil, nil, nil, cfg.Outbound, "mx2.example.test")
 	return s, db, blobs, id

@@ -3,6 +3,7 @@ package health
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/xeron-be/xeron-mx/internal/config"
 	"github.com/xeron-be/xeron-mx/internal/metrics"
+	"github.com/xeron-be/xeron-mx/internal/smtpclient"
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
 
@@ -145,7 +147,7 @@ func newHarness(t *testing.T) *harness {
 		FailureThreshold: 3,
 		SuccessThreshold: 2,
 	}
-	h.checker = New(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)), h.notify, h.wake, h.count)
+	h.checker = New(cfg, true, db, slog.New(slog.NewTextHandler(io.Discard, nil)), h.notify, h.wake, h.count)
 	return h
 }
 
@@ -347,7 +349,7 @@ func TestASilentPrimaryIsBoundedByTheTimeout(t *testing.T) {
 
 	d := &store.Domain{Name: "example.test", PrimaryHost: p.host, PrimaryPort: p.port, PrimaryTLS: "opportunistic"}
 	start := time.Now()
-	err := Probe(context.Background(), d, 300*time.Millisecond)
+	err := Probe(context.Background(), d, 300*time.Millisecond, true)
 	if err == nil {
 		t.Fatal("probe of a silent primary succeeded")
 	}
@@ -380,10 +382,48 @@ func TestProbeSpeaksAsTheDomain(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	d := &store.Domain{Name: "example.test", PrimaryHost: "127.0.0.1", PrimaryPort: port, PrimaryTLS: "none"}
-	if err := Probe(context.Background(), d, 2*time.Second); err != nil {
+	if err := Probe(context.Background(), d, 2*time.Second, true); err != nil {
 		t.Fatalf("Probe = %v", err)
 	}
 	if line := <-got; line != "EHLO xeronmx.example.test" {
 		t.Fatalf("probe opened with %q; want EHLO xeronmx.example.test", line)
+	}
+}
+
+func TestProbeRefusesAPrivatePrimaryUnlessAllowed(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			fmt.Fprint(c, "220 primary\r\n")
+			r := bufio.NewReader(c)
+			r.ReadString('\n')
+			fmt.Fprint(c, "250 primary\r\n")
+			r.ReadString('\n')
+			fmt.Fprint(c, "221 bye\r\n")
+			c.Close()
+		}
+	}()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	d := &store.Domain{Name: "example.test", PrimaryHost: "127.0.0.1", PrimaryPort: port, PrimaryTLS: "none"}
+
+	if err := Probe(context.Background(), d, 2*time.Second, false); !errors.Is(err, smtpclient.ErrNonPublicAddress) {
+		t.Fatalf("Probe(private, not allowed) = %v; want ErrNonPublicAddress", err)
+	}
+	if n := accepted.Load(); n != 0 {
+		t.Fatalf("the refused probe still opened %d connection(s)", n)
+	}
+	if err := Probe(context.Background(), d, 2*time.Second, true); err != nil {
+		t.Fatalf("Probe(private, allowed) = %v", err)
 	}
 }
