@@ -109,6 +109,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	Code     string `json:"code"`
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +159,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		s.loginFailed(w, r, req.Email, ip)
 		return
+	}
+
+	if user.TOTPEnabled {
+		if strings.TrimSpace(req.Code) == "" {
+			s.fail(w, r, http.StatusUnauthorized, ErrTOTPRequired)
+			return
+		}
+		if !s.secondFactorValid(r.Context(), user, req.Code) {
+			s.loginFailed(w, r, req.Email, ip)
+			return
+		}
 	}
 
 	if err := s.startSession(w, r, user.ID); err != nil {
@@ -221,6 +233,12 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"created_at":      u.CreatedAt, "last_login_at": u.LastLoginAt,
 		"from_directory": u.FromDirectory(),
 		"has_password":   u.HasPassword(),
+		"totp_enabled":   u.TOTPEnabled,
+	}
+	if u.TOTPEnabled {
+		if left, err := s.db.RecoveryCodesLeft(r.Context(), u.ID); err == nil {
+			body["recovery_codes_left"] = left
+		}
 	}
 	if tok := tokenFrom(r); tok != nil {
 		body["via_token"] = map[string]any{
@@ -555,7 +573,7 @@ func (s *Server) handleTestDomain(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	start := time.Now()
-	err := health.Probe(ctx, d, 15*time.Second)
+	err := health.Probe(ctx, d, 15*time.Second, s.queue.AllowPrivateDestinations)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -574,6 +592,9 @@ func (s *Server) handleTestDomain(w http.ResponseWriter, r *http.Request) {
 }
 
 func probeHint(err error) string {
+	if errors.Is(err, smtpclient.ErrNonPublicAddress) {
+		return "The primary is a private or local address, which this server refuses. Use the public address of the mail server, or set queue.allow_private_destinations if it sits on your own network."
+	}
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "no such host"):
@@ -979,6 +1000,7 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
+	u := userFrom(r)
 	events, unsubscribe := s.hub.subscribe()
 	defer unsubscribe()
 
@@ -992,9 +1014,16 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case raw, open := <-events:
+		case ev, open := <-events:
 			if !open {
 				return
+			}
+			if !s.liveVisible(r.Context(), u, ev) {
+				continue
+			}
+			raw, err := json.Marshal(ev)
+			if err != nil {
+				continue
 			}
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
 				return
@@ -1007,6 +1036,29 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+var nodeWideLiveEvents = map[string]bool{
+	"maintenance":        true,
+	store.EventQueueFull: true,
+}
+
+func (s *Server) liveVisible(ctx context.Context, u *store.User, ev Event) bool {
+	if u == nil || !u.Scoped() {
+		return true
+	}
+	if name, _ := ev.Payload["domain"].(string); name != "" {
+		return u.CanAccessDomain(name)
+	}
+	if id, _ := ev.Payload["id"].(string); id != "" {
+		m, err := s.db.GetMessage(ctx, id)
+		if err != nil {
+			return false
+		}
+		can, err := u.CanAccessDomainID(ctx, s.db, m.DomainID)
+		return err == nil && can
+	}
+	return nodeWideLiveEvents[ev.Type]
 }
 
 type smtpUserRequest struct {

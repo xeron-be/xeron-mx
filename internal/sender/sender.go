@@ -167,7 +167,7 @@ func (s *Sender) deliver(ctx context.Context, m *store.Message) {
 		res, err = s.sendOutbound(attemptCtx, m, body)
 	} else {
 		payload := s.sealARC(attemptCtx, d, m, body)
-		res, err = send(attemptCtx, d, m, payload, s.spamHeaders(m))
+		res, err = send(attemptCtx, d, m, payload, s.spamHeaders(m), s.destinationPolicy())
 	}
 	if err == nil {
 		s.settle(ctx, log, m, d, res, closeBody)
@@ -320,8 +320,12 @@ func (s *Sender) defer_(ctx context.Context, m *store.Message, reason string) {
 	s.record(ctx, store.EventMailDeferred, m, map[string]any{"reason": reason})
 }
 
-func send(ctx context.Context, d *store.Domain, m *store.Message, body io.Reader, extraHeaders string) (recipients, error) {
-	client, err := smtpclient.Dial(ctx, d, smtpclient.HelloName(d))
+func (s *Sender) destinationPolicy() smtpclient.Option {
+	return smtpclient.PublicOnly(!s.cfg.AllowPrivateDestinations)
+}
+
+func send(ctx context.Context, d *store.Domain, m *store.Message, body io.Reader, extraHeaders string, policy smtpclient.Option) (recipients, error) {
+	client, err := smtpclient.Dial(ctx, d, smtpclient.HelloName(d), policy)
 	if err != nil {
 		return recipients{}, err
 	}

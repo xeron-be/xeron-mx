@@ -323,6 +323,7 @@ func newHarness(t *testing.T, host string, port int, deliveryTimeout time.Durati
 	cfg := config.Default()
 	cfg.Queue.Workers = 2
 	cfg.Queue.DeliveryTimeout = deliveryTimeout
+	cfg.Queue.AllowPrivateDestinations = true
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -1183,5 +1184,29 @@ func TestBouncesCanBeSwitchedOff(t *testing.T) {
 
 	if n := len(h.outbound()); n != 0 {
 		t.Fatalf("%d bounces queued with bounces off", n)
+	}
+}
+
+func TestAPrivatePrimaryIsRefusedByDefault(t *testing.T) {
+	p := startPrimary(t)
+	h := newHarness(t, p.host, p.port, 5*time.Second, func(c *config.Config) {
+		c.Queue.AllowPrivateDestinations = false
+	})
+	id := h.enqueue(24*time.Hour, "alice@example.test")
+
+	h.pass()
+
+	if n := p.connections(); n != 0 {
+		t.Fatalf("the private primary received %d connection(s); want none", n)
+	}
+	m := h.message(id)
+	if m.Status != store.StatusQueued || m.Attempts != 1 {
+		t.Fatalf("status %s after %d attempts; want queued after 1", m.Status, m.Attempts)
+	}
+	if !strings.Contains(m.LastError, "allow_private_destinations") {
+		t.Fatalf("last error = %q; want the refusal to name the setting", m.LastError)
+	}
+	if !h.bodyKept(id) {
+		t.Fatal("the message body was dropped although the message stays queued")
 	}
 }

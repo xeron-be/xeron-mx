@@ -33,6 +33,8 @@ const TABS: { key: Tab; label: TranslationKey }[] = [
     { key: "events", label: "nav.timeline" },
 ];
 
+const FLEET_TABS: Tab[] = ["filters", "sending", "cluster"];
+
 export function App() {
     const t = useT();
     const [user, setUser] = useState<User | null>(null);
@@ -120,6 +122,7 @@ export function App() {
 
     const isAdmin = user.role === "admin";
     const isOperator = user.role === "admin" || user.role === "operator";
+    const scoped = !isAdmin && (user.allowed_domains?.length ?? 0) > 0;
 
     return (
         <div className="shell">
@@ -127,7 +130,7 @@ export function App() {
                 <div className="brand">XeronMX</div>
                 {TABS.filter((tabDef) => {
                     if (tabDef.key === "cluster" && !clustered) return false;
-                    if (tabDef.key === "settings" && !isAdmin) return false;
+                    if (scoped && FLEET_TABS.includes(tabDef.key)) return false;
                     return true;
                 }).map((tabDef) => (
                     <button

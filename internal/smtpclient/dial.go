@@ -22,9 +22,27 @@ const (
 	TLSImplicit = "tls"
 )
 
-func Dial(ctx context.Context, d *store.Domain, helloName string) (*smtp.Client, error) {
+type Option func(*dialOptions)
+
+type dialOptions struct {
+	publicOnly bool
+}
+
+func PublicOnly(enabled bool) Option {
+	return func(o *dialOptions) { o.publicOnly = enabled }
+}
+
+func Dial(ctx context.Context, d *store.Domain, helloName string, opts ...Option) (*smtp.Client, error) {
+	var o dialOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	addr := net.JoinHostPort(d.PrimaryHost, strconv.Itoa(d.PrimaryPort))
 	netDialer := &net.Dialer{}
+	if o.publicOnly {
+		netDialer.Control = rejectNonPublic
+	}
 
 	tlsConfig := &tls.Config{
 		ServerName: d.PrimaryHost,

@@ -227,7 +227,7 @@ func (s *Sender) directTo(ctx context.Context, m *store.Message, domain string, 
 			PrimaryPort: port,
 			PrimaryTLS:  "opportunistic",
 		}
-		client, err := smtpclient.Dial(ctx, route, s.heloName())
+		client, err := smtpclient.Dial(ctx, route, s.heloName(), s.destinationPolicy())
 		if err != nil {
 			lastErr = err
 			continue

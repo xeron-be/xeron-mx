@@ -1,19 +1,18 @@
 package api
 
 import (
-	"encoding/json"
 	"sync"
 	"time"
 )
 
 type Hub struct {
 	mu      sync.RWMutex
-	clients map[chan []byte]struct{}
+	clients map[chan Event]struct{}
 	closed  bool
 }
 
 func NewHub() *Hub {
-	return &Hub{clients: make(map[chan []byte]struct{})}
+	return &Hub{clients: make(map[chan Event]struct{})}
 }
 
 type Event struct {
@@ -29,21 +28,17 @@ func (h *Hub) Notify(eventType string, payload map[string]any) {
 		return
 	}
 
-	raw, err := json.Marshal(Event{Type: eventType, At: time.Now().UTC(), Payload: payload})
-	if err != nil {
-		return
-	}
+	ev := Event{Type: eventType, At: time.Now().UTC(), Payload: payload}
 	for ch := range h.clients {
 		select {
-		case ch <- raw:
+		case ch <- ev:
 		default:
 		}
 	}
 }
 
-func (h *Hub) subscribe() (<-chan []byte, func()) {
-
-	ch := make(chan []byte, 32)
+func (h *Hub) subscribe() (<-chan Event, func()) {
+	ch := make(chan Event, 32)
 
 	h.mu.Lock()
 	if h.closed {

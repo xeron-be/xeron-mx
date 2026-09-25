@@ -159,7 +159,7 @@ func run() error {
 	}
 	smtpSrv.SetMaintenance(maintMgr)
 	smtpSrv.SetDiskGuard(cfg.SpoolDir(), cfg.Queue.MinFreeDiskBytes, diskguard.DefaultCheck)
-	checker := health.New(cfg.Health, db, log.With("component", "health"), notifier, wake, counters)
+	checker := health.New(cfg.Health, cfg.Queue.AllowPrivateDestinations, db, log.With("component", "health"), notifier, wake, counters)
 	deliverer := sender.New(cfg.Queue, db, blobs, log.With("component", "sender"),
 		notifier, wake, counters, cfg.Outbound, cfg.SMTP.Hostname)
 

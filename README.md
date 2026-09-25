@@ -174,6 +174,7 @@ Mail held by XeronMX reaches your primary from XeronMX's address, not the origin
 - **Microsoft 365 / Exchange Online**: add XeronMX's host name as a trusted ARC sealer, or turn on Enhanced Filtering for the inbound connector and skip XeronMX's address.
 - **rspamd** (Mailcow and similar): treat XeronMX as a trusted relay or trust its ARC seal; check your version's documentation for the exact setting.
 - DKIM signatures survive the extra hop unchanged, so DMARC passes on DKIM alone for senders that sign, which is most of them.
+- Health probes connect, greet and leave without sending mail, every `health.interval` (30s by default). Some primaries read that as a scanner and block the address after a while: Poste.io answers `554 Blacklisted`, and the domain then shows as down while delivery is refused. Exempt XeronMX's addresses from the primary's anti-abuse blocking, or raise `health.interval` (2m was enough in practice).
 
 ### Verifying Webhooks and Alerts
 Event webhooks and the alert webhook are signed the same way when a secret is set. Each request carries `X-XeronMX-Timestamp` (Unix seconds) and `X-XeronMX-Signature: sha256=<hex>`, the HMAC-SHA256 of the timestamp, a dot, and the raw body. Check both, and reject anything more than five minutes old, so a captured request cannot be replayed later. Event webhooks also carry `X-XeronMX-Delivery`, to drop the duplicates that retries can produce.
@@ -191,7 +192,9 @@ def verify(secret: bytes, headers, body: bytes) -> bool:
 
 ### Multi-Tenancy & Domain-Scoped RBAC
 - Roles: `admin` (full system control), `operator` (queue inspection, retries, quarantine release, domain connectivity tests), and `viewer` (read-only telemetry).
-- Domain Scoping: Operators and viewers can be restricted to designated domains (`allowed_domains`), isolating queue entries, metrics, and timeline events.
+- Domain Scoping: Operators and viewers can be restricted to designated domains (`allowed_domains`), isolating queue entries, metrics, timeline and live events. Such an account cannot read node-wide settings (submission accounts, routes, filters, webhooks, cluster), and only an admin can drain the node.
+- Private destinations refused: whoever creates a domain chooses its primary, so delivery, health probes and direct sending refuse loopback, private, link-local (cloud metadata) and other non-public addresses, checked on the address actually dialled after DNS resolution. A self-hosted node whose primary sits on a LAN or behind a VPN sets `queue.allow_private_destinations: true`.
+- Account security: every password account can change its password from Settings, and turn on two-step verification with any authenticator app (TOTP, RFC 6238), with ten single-use recovery codes. Admins can reset another account's second factor. API tokens are unaffected, and cannot change their owner's credentials.
 - Dynamic OIDC Mapping: Maps external SSO group and role claims from identity providers (Google Workspace, Microsoft Entra ID, Keycloak, Okta) directly to local roles.
 
 ### High Availability & Clustering
@@ -252,6 +255,7 @@ queue:
   workers: 4
   retry_base: 1m
   retry_max: 2h
+  allow_private_destinations: false # true if a primary is on a private network
 
 health:
   interval: 30s
