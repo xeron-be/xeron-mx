@@ -152,7 +152,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	hook.CreatedAt = time.Now().UTC()
 
 	s.log.Info("webhook created", "name", name, "url", hook.URL, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: store.EventWebhookCreated, UserID: &admin.ID,
 		Data: map[string]any{"name": name, "url": hook.URL, "events": events},
 	})
@@ -263,7 +263,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	updated.CreatedAt = existing.CreatedAt
 
 	s.log.Info("webhook updated", "id", id, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: store.EventWebhookUpdated, UserID: &admin.ID,
 		Data: map[string]any{"id": id, "name": name, "enabled": enabled},
 	})
@@ -295,7 +295,7 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("webhook deleted", "id", id, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: store.EventWebhookDeleted, UserID: &admin.ID,
 		Data: map[string]any{"id": id},
 	})

@@ -228,6 +228,16 @@ tr:last-child td { border-bottom: none; }
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.nowrap { white-space: nowrap; }
+.queue-table .col-address { width: 22%; }
+.queue-table .col-subject { width: 30%; }
+.queue-table td.cell-text { max-width: 0; min-width: 9rem; }
+.queue-table td.cell-wide { min-width: 12rem; }
+.queue-table .clip {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 label { display: block; font-size: 0.85rem; font-weight: 550; margin-bottom: 0.3rem; }
 .field { margin-bottom: 0.9rem; }

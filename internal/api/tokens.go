@@ -162,7 +162,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	rec.CreatedAt = time.Now().UTC()
 
 	s.log.Warn("api token created", "name", name, "role", role, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "api_token_created", UserID: &admin.ID,
 		Data: map[string]any{"name": name, "role": role, "prefix": prefix},
 	})
@@ -194,7 +194,7 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Warn("api token revoked", "id", id, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "api_token_deleted", UserID: &admin.ID,
 		Data: map[string]any{"id": id},
 	})

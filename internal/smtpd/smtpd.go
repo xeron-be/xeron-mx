@@ -170,7 +170,7 @@ func (s *Server) newSession(c *smtp.Conn) (smtp.Session, error) {
 			_ = s.db.RecordEvent(ctx, &store.Event{
 				Type: store.EventMailRejected,
 				Data: map[string]any{
-					"reason": "dnsbl", "remote": remote, "zone": res.Zone, "record": res.Record,
+					"reason": "dnsbl", "remote": hostOf(remote), "zone": res.Zone, "record": res.Record,
 				},
 			})
 			cancel()
@@ -685,6 +685,17 @@ func (s *session) checkMalware(ctx context.Context, id string, size int64) (*cla
 func (s *Server) cfgSpamDefer() bool { return s.spamDefer }
 
 func (s *session) recordEvent(ctx context.Context, typ string, queueID *string, data map[string]any) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	if _, set := data["remote"]; !set {
+		data["remote"] = hostOf(s.remote)
+	}
+	if s.conn != nil {
+		if helo := s.conn.Hostname(); helo != "" {
+			data["helo"] = helo
+		}
+	}
 	e := &store.Event{Type: typ, QueueID: queueID, Data: data}
 	if s.domainID != 0 {
 		id := s.domainID

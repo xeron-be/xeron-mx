@@ -53,15 +53,19 @@ func (s *Server) passwordMatches(u *store.User, password string) bool {
 
 func (s *Server) wrongPassword(w http.ResponseWriter, r *http.Request, u *store.User) {
 	s.log.Warn("failed login", "email", u.Email, "ip", clientIP(r), "during", "account change")
+	s.audit(r.Context(), r, &store.Event{
+		Type: store.EventLoginFailed,
+		Data: map[string]any{"email": u.Email, "reason": "wrong_password", "during": "account_change"},
+	})
 	s.fail(w, r, http.StatusUnauthorized, ErrInvalidCredentials)
 }
 
-func (s *Server) record(ctx context.Context, typ string, u *store.User, data map[string]any) {
+func (s *Server) record(ctx context.Context, r *http.Request, typ string, u *store.User, data map[string]any) {
 	if data == nil {
 		data = map[string]any{}
 	}
 	data["email"] = u.Email
-	s.db.RecordEvent(ctx, &store.Event{Type: typ, UserID: &u.ID, Data: data})
+	s.audit(ctx, r, &store.Event{Type: typ, UserID: &u.ID, Data: data})
 }
 
 type changePasswordReq struct {
@@ -107,7 +111,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.limiter.Reset(clientIP(r))
-	s.record(r.Context(), EventPasswordChanged, u, nil)
+	s.record(r.Context(), r, EventPasswordChanged, u, nil)
 	s.log.Info("password changed", "email", u.Email, "ip", clientIP(r))
 	s.ok(w, http.StatusOK, map[string]any{"changed": true})
 }
@@ -223,7 +227,7 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.limiter.Reset(clientIP(r))
-	s.record(r.Context(), EventTOTPEnabled, u, nil)
+	s.record(r.Context(), r, EventTOTPEnabled, u, nil)
 	s.log.Info("two-factor authentication enabled", "email", u.Email)
 	s.ok(w, http.StatusOK, map[string]any{"enabled": true, "recovery_codes": codes})
 }
@@ -263,7 +267,7 @@ func (s *Server) confirmIdentity(w http.ResponseWriter, r *http.Request) (*store
 		s.wrongPassword(w, r, u)
 		return nil, false
 	}
-	if !s.secondFactorValid(r.Context(), u, req.Code) {
+	if !s.secondFactorValid(r.Context(), r, u, req.Code) {
 		s.fail(w, r, http.StatusUnauthorized, ErrInvalidTOTPCode)
 		return nil, false
 	}
@@ -281,7 +285,7 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, ErrInternal)
 		return
 	}
-	s.record(r.Context(), EventTOTPDisabled, u, nil)
+	s.record(r.Context(), r, EventTOTPDisabled, u, nil)
 	s.log.Warn("two-factor authentication disabled", "email", u.Email, "ip", clientIP(r))
 	s.ok(w, http.StatusOK, map[string]any{"enabled": false})
 }
@@ -301,11 +305,11 @@ func (s *Server) handleTOTPRecoveryCodes(w http.ResponseWriter, r *http.Request)
 		s.fail(w, r, http.StatusInternalServerError, ErrInternal)
 		return
 	}
-	s.record(r.Context(), EventRecoveryRenewed, u, nil)
+	s.record(r.Context(), r, EventRecoveryRenewed, u, nil)
 	s.ok(w, http.StatusOK, map[string]any{"recovery_codes": codes})
 }
 
-func (s *Server) secondFactorValid(ctx context.Context, u *store.User, code string) bool {
+func (s *Server) secondFactorValid(ctx context.Context, r *http.Request, u *store.User, code string) bool {
 	if totp.LooksLikeCode(code) {
 		secret, err := s.totpSecret(u)
 		if err != nil {
@@ -332,7 +336,7 @@ func (s *Server) secondFactorValid(ctx context.Context, u *store.User, code stri
 	}
 	if used {
 		left, _ := s.db.RecoveryCodesLeft(ctx, u.ID)
-		s.record(ctx, EventRecoveryCodeUsed, u, map[string]any{"left": left})
+		s.record(ctx, r, EventRecoveryCodeUsed, u, map[string]any{"left": left})
 		s.log.Warn("recovery code used", "email", u.Email, "left", left)
 	}
 	return used

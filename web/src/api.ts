@@ -359,6 +359,9 @@ export interface TimelineEvent {
     type: string;
     domain_id?: number | null;
     queue_id?: string | null;
+    user_id?: number | null;
+    user?: string;
+    domain_name?: string;
     data?: Record<string, unknown>;
     created_at: string;
 }

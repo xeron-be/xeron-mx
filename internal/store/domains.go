@@ -251,6 +251,9 @@ type Event struct {
 	UserID    *int64         `json:"user_id,omitempty"`
 	Data      map[string]any `json:"data,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
+
+	User       string `json:"user,omitempty"`
+	DomainName string `json:"domain_name,omitempty"`
 }
 
 func (db *DB) RecordEvent(ctx context.Context, e *Event) error {
