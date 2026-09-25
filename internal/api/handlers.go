@@ -16,6 +16,7 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/health"
 	"github.com/xeron-be/xeron-mx/internal/smtpclient"
 	"github.com/xeron-be/xeron-mx/internal/store"
+	"github.com/xeron-be/xeron-mx/internal/totp"
 	"github.com/xeron-be/xeron-mx/internal/version"
 )
 
@@ -94,9 +95,9 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("initial administrator created", "email", req.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: store.EventLogin, UserID: &userID,
-		Data: map[string]any{"initial_setup": true},
+		Data: map[string]any{"initial_setup": true, "by": req.Email},
 	})
 
 	if err := s.startSession(w, r, userID); err != nil {
@@ -132,7 +133,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Password) > auth.MaxPasswordBytes {
 
-		s.loginFailed(w, r, req.Email, ip)
+		s.loginFailed(w, r, req.Email, ip, "password_too_long")
 		return
 	}
 
@@ -143,12 +144,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 
 		auth.HashPassword(req.Password)
-		s.loginFailed(w, r, req.Email, ip)
+		s.loginFailed(w, r, req.Email, ip, "unknown_account")
 		return
 	}
 
 	if !user.HasPassword() {
-		s.loginFailed(w, r, req.Email, ip)
+		s.loginFailed(w, r, req.Email, ip, "sso_account")
 		return
 	}
 
@@ -157,7 +158,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.log.Error("login: hash verification failed", "error", err)
 		}
-		s.loginFailed(w, r, req.Email, ip)
+		s.loginFailed(w, r, req.Email, ip, "wrong_password")
 		return
 	}
 
@@ -166,8 +167,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, r, http.StatusUnauthorized, ErrTOTPRequired)
 			return
 		}
-		if !s.secondFactorValid(r.Context(), user, req.Code) {
-			s.loginFailed(w, r, req.Email, ip)
+		if !s.secondFactorValid(r.Context(), r, user, req.Code) {
+			s.loginFailed(w, r, req.Email, ip, "wrong_code")
 			return
 		}
 	}
@@ -181,9 +182,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.limiter.Reset(ip)
 
 	s.db.TouchLogin(r.Context(), user.ID)
-	s.db.RecordEvent(r.Context(), &store.Event{
-		Type: store.EventLogin, UserID: &user.ID, Data: map[string]any{"ip": ip},
-	})
+	login := map[string]any{"ip": ip, "by": user.Email}
+	if user.TOTPEnabled {
+		login["second_factor"] = "recovery_code"
+		if totp.LooksLikeCode(req.Code) {
+			login["second_factor"] = "totp"
+		}
+	}
+	s.audit(r.Context(), r, &store.Event{Type: store.EventLogin, UserID: &user.ID, Data: login})
 	s.log.Info("login", "email", user.Email, "ip", ip)
 
 	s.ok(w, http.StatusOK, map[string]any{
@@ -192,11 +198,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request, email, ip string) {
+func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request, email, ip, reason string) {
 	s.log.Warn("failed login", "email", email, "ip", ip)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: store.EventLoginFailed,
-		Data: map[string]any{"email": email, "ip": ip},
+		Data: map[string]any{"email": email, "ip": ip, "reason": reason},
 	})
 	s.fail(w, r, http.StatusUnauthorized, ErrInvalidCredentials)
 }
@@ -409,7 +415,7 @@ func (s *Server) handleSetDrain(w http.ResponseWriter, r *http.Request) {
 	if u != nil {
 		userEmail = u.Email
 	}
-	_ = s.db.RecordEvent(r.Context(), &store.Event{
+	_ = s.audit(r.Context(), r, &store.Event{
 		Type: store.EventMaintenanceDrain,
 		Data: map[string]any{
 			"enabled": enabled,
@@ -488,7 +494,7 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("domain added", "name", d.Name, "primary", d.PrimaryHost)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "domain_added", DomainID: &id, UserID: &userFrom(r).ID,
 		Data: map[string]any{"name": d.Name, "primary_host": d.PrimaryHost},
 	})
@@ -557,7 +563,7 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Warn("domain deleted", "name", d.Name, "discarded_messages", pending)
-	s.db.RecordEvent(ctx, &store.Event{
+	s.audit(ctx, r, &store.Event{
 		Type: "domain_deleted", UserID: &userFrom(r).ID,
 		Data: map[string]any{"name": d.Name, "discarded": pending},
 	})
@@ -850,7 +856,7 @@ func (s *Server) handleRawMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	u := userFrom(r)
 
-	if err := s.db.RecordEvent(r.Context(), &store.Event{
+	if err := s.audit(r.Context(), r, &store.Event{
 		Type: store.EventAdminRead, QueueID: &m.ID, DomainID: &m.DomainID, UserID: &u.ID,
 		Data: map[string]any{"ip": clientIP(r), "from": m.EnvelopeFrom, "to": m.EnvelopeTo},
 	}); err != nil {
@@ -888,7 +894,7 @@ func (s *Server) handleRetryMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userFrom(r)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: store.EventAdminRetry, QueueID: &m.ID, DomainID: &m.DomainID, UserID: &u.ID,
 	})
 	s.log.Info("manual retry requested", "id", m.ID, "admin", u.Email)
@@ -907,7 +913,7 @@ func (s *Server) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	u := userFrom(r)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: store.EventAdminDelete, QueueID: &m.ID, DomainID: &m.DomainID, UserID: &u.ID,
 		Data: map[string]any{"from": m.EnvelopeFrom, "to": m.EnvelopeTo, "subject": m.Subject},
 	})
@@ -983,7 +989,31 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, http.StatusInternalServerError, ErrInternal)
 		return
 	}
+	s.nameEvents(r.Context(), events)
 	s.ok(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *Server) nameEvents(ctx context.Context, events []*store.Event) {
+	users := map[int64]string{}
+	if list, err := s.db.ListUsers(ctx); err == nil {
+		for _, u := range list {
+			users[u.ID] = u.Email
+		}
+	}
+	domains := map[int64]string{}
+	if list, err := s.db.ListDomains(ctx); err == nil {
+		for _, d := range list {
+			domains[d.ID] = d.Name
+		}
+	}
+	for _, e := range events {
+		if e.UserID != nil {
+			e.User = users[*e.UserID]
+		}
+		if e.DomainID != nil {
+			e.DomainName = domains[*e.DomainID]
+		}
+	}
 }
 
 func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
@@ -1128,7 +1158,7 @@ func (s *Server) handleCreateSMTPUser(w http.ResponseWriter, r *http.Request) {
 
 	admin := userFrom(r)
 	s.log.Info("submission account created", "username", username, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "smtp_user_created", UserID: &admin.ID,
 		Data: map[string]any{"username": username, "allowed_domains": req.AllowedDomains},
 	})
@@ -1181,7 +1211,7 @@ func (s *Server) handleDeleteSMTPUser(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := userFrom(r)
 	s.log.Warn("submission account deleted", "id", id, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "smtp_user_deleted", UserID: &admin.ID, Data: map[string]any{"id": id},
 	})
 	s.ok(w, http.StatusOK, map[string]any{"deleted": id})

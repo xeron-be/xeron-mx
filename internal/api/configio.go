@@ -153,7 +153,7 @@ func (s *Server) handleImportConfig(w http.ResponseWriter, r *http.Request) {
 	if !dryRun {
 		admin := userFrom(r)
 		s.log.Warn("configuration imported", "by", admin.Email, "summary", report["description"])
-		s.db.RecordEvent(ctx, &store.Event{
+		s.audit(ctx, r, &store.Event{
 			Type: "config_imported", UserID: &admin.ID,
 			Data: map[string]any{"summary": report["description"]},
 		})

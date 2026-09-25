@@ -413,6 +413,25 @@ func TestFilterRejectsAtSMTPTime(t *testing.T) {
 	if len(msgs) != 0 {
 		t.Fatalf("%d message(s) queued after a reject", len(msgs))
 	}
+
+	events, err := h.db.ListEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rejected *store.Event
+	for _, e := range events {
+		if e.Type == store.EventMailRejected {
+			rejected = e
+		}
+	}
+	if rejected == nil {
+		t.Fatal("the rejection is not on the timeline")
+	}
+	d := rejected.Data
+	if d["remote"] != "127.0.0.1" || d["helo"] == nil || d["helo"] == "" ||
+		d["from"] != "sender@outside.test" || d["filter"] != "no invoices" {
+		t.Fatalf("the rejection does not say who sent what from where: %v", d)
+	}
 }
 
 func TestFilterQuarantineAcceptsButHolds(t *testing.T) {

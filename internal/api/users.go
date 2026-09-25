@@ -129,7 +129,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if current != nil {
 		currentID = &current.ID
 	}
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type:   "user_created",
 		UserID: currentID,
 		Data:   map[string]any{"user_id": id, "email": created.Email, "role": created.Role, "allowed_domains": created.AllowedDomains},
@@ -200,7 +200,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if current != nil {
 			by = &current.ID
 		}
-		s.db.RecordEvent(r.Context(), &store.Event{
+		s.audit(r.Context(), r, &store.Event{
 			Type: EventTOTPReset, UserID: by, Data: map[string]any{"user_id": id, "email": target.Email},
 		})
 		s.log.Warn("two-factor authentication reset by an admin", "email", target.Email)
@@ -231,7 +231,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if current != nil {
 		currentID = &current.ID
 	}
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type:   "user_updated",
 		UserID: currentID,
 		Data:   map[string]any{"user_id": id, "email": updated.Email, "role": updated.Role, "allowed_domains": updated.AllowedDomains},
@@ -280,7 +280,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if current != nil {
 		currentID = &current.ID
 	}
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type:   "user_deleted",
 		UserID: currentID,
 		Data:   map[string]any{"user_id": id, "email": target.Email},

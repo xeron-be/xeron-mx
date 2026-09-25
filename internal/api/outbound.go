@@ -93,7 +93,7 @@ func (s *Server) handleCreateDKIM(w http.ResponseWriter, r *http.Request) {
 
 	admin := userFrom(r)
 	s.log.Info("dkim key generated", "domain", d.Name, "selector", key.Selector, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "dkim_key_created", DomainID: &d.ID, UserID: &admin.ID,
 		Data: map[string]any{"domain": d.Name, "selector": key.Selector,
 			"algorithm": key.Algorithm},
@@ -193,7 +193,7 @@ func (s *Server) handleDeleteDKIM(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := userFrom(r)
 	s.log.Warn("dkim key deleted", "domain", d.Name, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "dkim_key_deleted", DomainID: &d.ID, UserID: &admin.ID,
 		Data: map[string]any{"domain": d.Name},
 	})
@@ -327,7 +327,7 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 
 	admin := userFrom(r)
 	s.log.Info("outbound route added", "destination", rt.Destination, "mode", rt.Mode, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "route_created", UserID: &admin.ID,
 		Data: map[string]any{"destination": rt.Destination, "mode": rt.Mode},
 	})
@@ -391,7 +391,7 @@ func (s *Server) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := userFrom(r)
 	s.log.Warn("outbound route deleted", "id", id, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "route_deleted", UserID: &admin.ID, Data: map[string]any{"id": id},
 	})
 	s.ok(w, http.StatusOK, map[string]any{"deleted": id})

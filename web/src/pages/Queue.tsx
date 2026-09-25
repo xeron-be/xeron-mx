@@ -153,13 +153,13 @@ export function Queue({
                     />
                 ) : (
                     <div className="table-wrap">
-                        <table>
+                        <table className="queue-table">
                             <thead>
                                 <tr>
                                     <th>{t("queue.thReceived")}</th>
-                                    <th>{t("queue.thFrom")}</th>
-                                    <th>{t("queue.thTo")}</th>
-                                    <th>{t("queue.thSubject")}</th>
+                                    <th className="col-address">{t("queue.thFrom")}</th>
+                                    <th className="col-address">{t("queue.thTo")}</th>
+                                    <th className="col-subject">{t("queue.thSubject")}</th>
                                     <th>{t("queue.thStatus")}</th>
                                     <th>{t("queue.thSize")}</th>
                                     {canEdit && <th />}
@@ -173,20 +173,24 @@ export function Queue({
                                             onClick={() => setOpen(open === m.id ? null : m.id)}
                                             style={{ cursor: "pointer" }}
                                         >
-                                            <td title={absolute(m.received_at)}>
+                                            <td className="nowrap" title={absolute(m.received_at)}>
                                                 {relative(m.received_at)}
                                             </td>
-                                            <td className="truncate mono" title={m.from}>
-                                                {m.from || "<>"}
+                                            <td className="cell-text mono" title={m.from}>
+                                                <div className="clip">{m.from || "<>"}</div>
                                             </td>
-                                            <td className="truncate mono" title={m.to.join(", ")}>
-                                                {m.to[0]}
-                                                {m.to.length > 1 && ` +${m.to.length - 1}`}
+                                            <td className="cell-text mono" title={m.to.join(", ")}>
+                                                <div className="clip">
+                                                    {m.to[0]}
+                                                    {m.to.length > 1 && ` +${m.to.length - 1}`}
+                                                </div>
                                             </td>
-                                            <td className="truncate" title={m.subject}>
-                                                {m.subject || <span style={{ opacity: 0.5 }}>—</span>}
+                                            <td className="cell-text cell-wide" title={m.subject}>
+                                                <div className="clip">
+                                                    {m.subject || <span style={{ opacity: 0.5 }}>—</span>}
+                                                </div>
                                             </td>
-                                            <td>
+                                            <td className="nowrap">
                                                 <Pill tone={statusTone(m.status)}>{statusLabel(m.status)}</Pill>
                                                 {m.quarantined_at && (
                                                     <span
@@ -217,10 +221,10 @@ export function Queue({
                                                     </span>
                                                 )}
                                             </td>
-                                            <td>{bytes(m.size_bytes)}</td>
+                                            <td className="nowrap">{bytes(m.size_bytes)}</td>
                                             {canEdit && (
-                                                <td onClick={(e) => e.stopPropagation()}>
-                                                    <div className="row">
+                                                <td className="nowrap" onClick={(e) => e.stopPropagation()}>
+                                                    <div className="row" style={{ flexWrap: "nowrap" }}>
                                                         {m.status !== "delivered" && (
                                                             <button
                                                                 className="btn-sm"

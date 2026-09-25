@@ -66,7 +66,7 @@ func (s *Server) handleSetRecipients(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("known recipients updated", "domain", d.Name, "count", len(list))
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "recipients_updated", DomainID: &d.ID, UserID: &userFrom(r).ID,
 		Data: map[string]any{"domain": d.Name, "count": len(list)},
 	})

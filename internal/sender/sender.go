@@ -344,16 +344,20 @@ func (s *Sender) maintain(ctx context.Context) {
 
 		s.count.MessagesExpired.Add(1)
 		s.log.Warn("message expired before the primary accepted it", "id", id)
+		expiredEvent := &store.Event{Type: store.EventMailExpired, QueueID: &id}
 		if m, err := s.db.GetMessage(ctx, id); err == nil {
 			held := now.Sub(m.ReceivedAt)
 			s.bounce(ctx, m, eachRecipient(m.EnvelopeTo, func(rcpt string) dsn.Failure { return dsn.Expired(rcpt, held) }))
+			domainID := m.DomainID
+			expiredEvent.DomainID = &domainID
+			expiredEvent.Data = map[string]any{
+				"from": m.EnvelopeFrom, "to": m.EnvelopeTo, "attempts": m.Attempts, "last_error": m.LastError,
+			}
 		}
 		if err := s.blobs.Delete(id); err != nil {
 			s.log.Warn("expired body not removed", "id", id, "error", err)
 		}
-		if err := s.db.RecordEvent(ctx, &store.Event{
-			Type: store.EventMailExpired, QueueID: &id,
-		}); err != nil {
+		if err := s.db.RecordEvent(ctx, expiredEvent); err != nil {
 			s.log.Warn("expiry event not recorded", "error", err)
 		}
 		if s.notify != nil {

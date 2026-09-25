@@ -126,7 +126,7 @@ func (s *Server) handleCreateFilter(w http.ResponseWriter, r *http.Request) {
 
 	admin := userFrom(r)
 	s.log.Info("filter created", "name", f.Name, "action", f.Action, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "filter_created", UserID: &admin.ID,
 		Data: map[string]any{"name": f.Name, "field": f.Field, "action": f.Action},
 	})
@@ -185,7 +185,7 @@ func (s *Server) handleDeleteFilter(w http.ResponseWriter, r *http.Request) {
 
 	admin := userFrom(r)
 	s.log.Warn("filter deleted", "id", id, "by", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "filter_deleted", UserID: &admin.ID, Data: map[string]any{"id": id},
 	})
 	s.ok(w, http.StatusOK, map[string]any{"deleted": id})
@@ -270,7 +270,7 @@ func (s *Server) handleReleaseMessage(w http.ResponseWriter, r *http.Request) {
 
 	admin := userFrom(r)
 	s.log.Warn("message released from quarantine", "id", m.ID, "admin", admin.Email)
-	s.db.RecordEvent(r.Context(), &store.Event{
+	s.audit(r.Context(), r, &store.Event{
 		Type: "mail_released", QueueID: &m.ID, DomainID: &m.DomainID, UserID: &admin.ID,
 		Data: map[string]any{"from": m.EnvelopeFrom, "to": m.EnvelopeTo,
 			"was": m.QuarantineReason},

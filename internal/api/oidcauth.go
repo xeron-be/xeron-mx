@@ -157,9 +157,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.db.TouchLogin(ctx, user.ID)
-	s.db.RecordEvent(ctx, &store.Event{
+	s.audit(ctx, r, &store.Event{
 		Type: store.EventLogin, UserID: &user.ID,
-		Data: map[string]any{"ip": clientIP(r), "method": "oidc", "issuer": identity.Issuer},
+		Data: map[string]any{"ip": clientIP(r), "method": "oidc", "issuer": identity.Issuer, "by": user.Email},
 	})
 	s.log.Info("sso login", "email", user.Email, "role", user.Role, "ip", clientIP(r))
 

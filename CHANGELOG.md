@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- A detailed timeline. Every action taken through the panel or the API records
+  the account that did it, the API token when one was used, and the client
+  address; failed logins say why (unknown account, wrong password, wrong code,
+  SSO account); logins say which second factor was used. Mail events carry the
+  sending host's address and HELO name, and expired mail its sender,
+  recipients, attempts and last error. The events API names the account and the
+  domain of each event (`user`, `domain_name`), and the panel shows a one-line
+  summary with a details panel listing every recorded field
 - Two-step verification for panel accounts: TOTP codes from any authenticator
   app (RFC 6238), turned on from Settings with a QR code, with ten single-use
   recovery codes shown once. The secret is sealed with the master key, a code
