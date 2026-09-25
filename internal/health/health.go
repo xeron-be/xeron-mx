@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,27 +61,48 @@ func (c *Checker) checkAll(ctx context.Context) {
 		return
 	}
 
-	var wg sync.WaitGroup
+	var order []string
+	groups := map[string][]*store.Domain{}
 	for _, d := range domains {
 		if !d.Enabled {
 			continue
 		}
+		key := primaryKey(d)
+		if _, seen := groups[key]; !seen {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], d)
+	}
+
+	var wg sync.WaitGroup
+	for _, key := range order {
 		wg.Add(1)
-		go func(d *store.Domain) {
+		go func(sharing []*store.Domain) {
 			defer wg.Done()
-			c.checkOne(ctx, d)
-		}(d)
+			probeErr := c.probe(ctx, sharing[0])
+			for _, d := range sharing {
+				c.apply(ctx, d, probeErr)
+			}
+		}(groups[key])
 	}
 	wg.Wait()
 }
 
-func (c *Checker) checkOne(ctx context.Context, d *store.Domain) {
+func primaryKey(d *store.Domain) string {
+	return fmt.Sprintf("%s|%d|%s", strings.ToLower(strings.TrimSuffix(d.PrimaryHost, ".")), d.PrimaryPort, d.PrimaryTLS)
+}
+
+func (c *Checker) probe(ctx context.Context, d *store.Domain) error {
 	probeErr := Probe(ctx, d, c.cfg.Timeout, c.allowPrivate)
-	ok := probeErr == nil
 	c.count.ProbesTotal.Add(1)
-	if !ok {
+	if probeErr != nil {
 		c.count.ProbesFailed.Add(1)
 	}
+	return probeErr
+}
+
+func (c *Checker) apply(ctx context.Context, d *store.Domain, probeErr error) {
+	ok := probeErr == nil
 	msg := ""
 	if probeErr != nil {
 		msg = probeErr.Error()

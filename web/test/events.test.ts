@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { describeEvent } from "../src/pages/Events";
+import { describeEvent, detailRows, timelineLabel } from "../src/pages/Events";
 import { setLang } from "../src/i18n";
 
 beforeEach(() => setLang("en"));
@@ -47,5 +47,35 @@ describe("timeline summaries", () => {
                 data: { reason: "spam", score: 18.5, from: "x@spam.test", to: ["a@example.com"], remote: "192.0.2.9", helo: "mx.spam.test" },
             }),
         ).toBe("spam · score 18.5 · from x@spam.test · to a@example.com · from 192.0.2.9 (mx.spam.test)");
+    });
+});
+
+describe("timeline details", () => {
+    it("shows the domain and the account once", () => {
+        const rows = detailRows({
+            id: 10, type: "mail_delivered", created_at: at, domain_name: "xeron.be", queue_id: "abc",
+            user: "admin@example.com",
+            data: { domain: "xeron.be", by: "admin@example.com", to: ["a@far.example"] },
+        });
+        expect(rows.filter(([, v]) => v === "xeron.be")).toHaveLength(1);
+        expect(rows.filter(([, v]) => v === "admin@example.com")).toHaveLength(1);
+        expect(rows.map(([k]) => k)).toEqual(["Domain", "Message", "By", "Recipients"]);
+    });
+
+    it("keeps a domain field that differs from the resolved one", () => {
+        const rows = detailRows({
+            id: 11, type: "domain_deleted", created_at: at, domain_name: "old.example",
+            data: { domain: "other.example" },
+        });
+        expect(rows.map(([, v]) => v)).toEqual(["old.example", "other.example"]);
+    });
+});
+
+describe("timeline labels", () => {
+    it("tells outbound deliveries from deliveries to the primary", () => {
+        expect(timelineLabel({ id: 12, type: "mail_delivered", created_at: at, data: { direction: "outbound" } }))
+            .toBe("Sent to the recipient");
+        expect(timelineLabel({ id: 13, type: "mail_delivered", created_at: at, data: {} }))
+            .not.toBe("Sent to the recipient");
     });
 });

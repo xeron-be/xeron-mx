@@ -439,6 +439,7 @@ type domainRequest struct {
 	PrimaryPort      int    `json:"primary_port"`
 	PrimaryTLS       string `json:"primary_tls"`
 	MaxQueueMessages *int64 `json:"max_queue_messages"`
+	MonthlySendLimit *int64 `json:"monthly_send_limit"`
 	RetentionHours   int    `json:"retention_hours"`
 	Enabled          *bool  `json:"enabled"`
 }
@@ -709,7 +710,8 @@ func (s *Server) domainFromRequest(req *domainRequest, existing *store.Domain) (
 			ID: existing.ID, Name: existing.Name,
 			PrimaryHost: existing.PrimaryHost, PrimaryPort: existing.PrimaryPort,
 			PrimaryTLS: existing.PrimaryTLS, MaxQueueMessages: existing.MaxQueueMessages,
-			RetentionHours: existing.RetentionHours, Enabled: existing.Enabled,
+			MonthlySendLimit: existing.MonthlySendLimit,
+			RetentionHours:   existing.RetentionHours, Enabled: existing.Enabled,
 		}
 	}
 
@@ -754,6 +756,12 @@ func (s *Server) domainFromRequest(req *domainRequest, existing *store.Domain) (
 	if req.MaxQueueMessages != nil {
 		d.MaxQueueMessages = req.MaxQueueMessages
 	}
+	if req.MonthlySendLimit != nil {
+		d.MonthlySendLimit = req.MonthlySendLimit
+		if *req.MonthlySendLimit <= 0 {
+			d.MonthlySendLimit = nil
+		}
+	}
 	if req.Enabled != nil {
 		d.Enabled = *req.Enabled
 	}
@@ -770,7 +778,11 @@ func (s *Server) domainJSON(ctx context.Context, d *store.Domain) map[string]any
 		"primary_host": d.PrimaryHost, "primary_port": d.PrimaryPort,
 		"primary_tls": d.PrimaryTLS, "retention_hours": d.RetentionHours,
 		"max_queue_messages": d.MaxQueueMessages,
+		"monthly_send_limit": d.MonthlySendLimit,
 		"enabled":            d.Enabled, "created_at": d.CreatedAt,
+	}
+	if n, err := s.db.SentThisMonth(ctx, d.ID, time.Now()); err == nil {
+		out["sent_this_month"] = n
 	}
 	if st, err := s.db.PrimaryStatusFor(ctx, d.ID); err == nil {
 		out["primary"] = map[string]any{

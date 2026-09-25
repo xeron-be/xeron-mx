@@ -39,7 +39,10 @@ var schemaV8SQL string
 //go:embed schema_v9.sql
 var schemaV9SQL string
 
-const schemaVersion = 9
+//go:embed schema_v10.sql
+var schemaV10SQL string
+
+const schemaVersion = 10
 
 type DB struct {
 	*sql.DB
@@ -144,6 +147,11 @@ func (db *DB) migrate(ctx context.Context) error {
 			return fmt.Errorf("store: apply schema v9: %w", err)
 		}
 	}
+	if current < 10 {
+		if _, err := tx.ExecContext(ctx, schemaV10SQL); err != nil {
+			return fmt.Errorf("store: apply schema v10: %w", err)
+		}
+	}
 
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("store: set user_version: %w", err)
@@ -165,6 +173,7 @@ type Domain struct {
 	PrimaryPort      int
 	PrimaryTLS       string
 	MaxQueueMessages *int64
+	MonthlySendLimit *int64
 	RetentionHours   int
 	Enabled          bool
 	CreatedAt        time.Time

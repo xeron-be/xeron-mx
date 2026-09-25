@@ -443,8 +443,12 @@ func TestDeliveredByteForByteThenRemoved(t *testing.T) {
 	if h.bodyKept(id) {
 		t.Fatal("the encrypted body is still on disk after delivery")
 	}
-	if len(h.events(store.EventMailDelivered)) != 1 || h.count.MessagesDelivered.Load() != 1 {
+	delivered := h.events(store.EventMailDelivered)
+	if len(delivered) != 1 || h.count.MessagesDelivered.Load() != 1 {
 		t.Fatal("delivery not recorded on the timeline and in the counters")
+	}
+	if _, set := delivered[0].Data["direction"]; set || fmt.Sprint(delivered[0].Data["to"]) != "[alice@example.test]" {
+		t.Fatalf("delivery event data = %v; want its recipients and no direction", delivered[0].Data)
 	}
 }
 
@@ -1041,6 +1045,9 @@ func TestSubmittedMailAuthenticatesToTheRelay(t *testing.T) {
 	if !authed || h.message(id).Status != store.StatusDelivered || len(relay.transactions()) != 1 {
 		t.Fatalf("authenticated %v, status %s, relayed %d; want an authenticated delivery",
 			authed, h.message(id).Status, len(relay.transactions()))
+	}
+	if ev := h.events(store.EventMailDelivered); len(ev) != 1 || ev[0].Data["direction"] != "outbound" {
+		t.Fatalf("delivery events = %v; want one marked outbound", ev)
 	}
 }
 

@@ -88,6 +88,9 @@ First boot opens a web wizard at `http://<host>:8080`:
   `452 4.3.1` so the sender retries
 - A domain past its own `max_queue_messages` → `452 4.3.1` for that domain
   only (no alert: the rest of the node is still accepting)
+- A domain past its `monthly_send_limit` (recipients submitted on port 587 this
+  calendar month, UTC) → `550 5.7.1` at submission for that domain only, and a
+  `send_limit_reached` event the first time
 - Free space on the spool volume below `queue.min_free_disk_bytes` → alert,
   and `452 4.3.1` at `MAIL FROM`
 - Node in drain mode → `421 4.3.2`, so the sender defers or tries another MX
