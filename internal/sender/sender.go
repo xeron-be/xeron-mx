@@ -248,7 +248,7 @@ func (s *Sender) settle(ctx context.Context, log *slog.Logger, m *store.Message,
 	}
 	s.count.MessagesDelivered.Add(1)
 	log.Info("delivered", "domain", d.Name, "direction", m.Direction, "recipients", len(res.accepted))
-	s.record(ctx, store.EventMailDelivered, m, map[string]any{"domain": d.Name})
+	s.record(ctx, store.EventMailDelivered, m, map[string]any{"domain": d.Name, "to": res.accepted})
 }
 
 func eachRecipient(rcpts []string, f func(string) dsn.Failure) []dsn.Failure {
@@ -383,6 +383,9 @@ func (s *Sender) maintain(ctx context.Context) {
 }
 
 func (s *Sender) record(ctx context.Context, typ string, m *store.Message, data map[string]any) {
+	if m.Direction == store.DirectionOutbound {
+		data["direction"] = string(store.DirectionOutbound)
+	}
 	domainID := m.DomainID
 	id := m.ID
 	if err := s.db.RecordEvent(ctx, &store.Event{

@@ -146,16 +146,18 @@ type session struct {
 	remote string
 	log    *slog.Logger
 
-	user     *store.SMTPUser
-	from     string
-	rcpts    []string
-	domainID int64
+	user      *store.SMTPUser
+	from      string
+	rcpts     []string
+	domainID  int64
+	sendLimit *int64
 }
 
 func (s *session) Reset() {
 	s.from = ""
 	s.rcpts = nil
 	s.domainID = 0
+	s.sendLimit = nil
 }
 
 func (s *session) Logout() error { return nil }
@@ -290,6 +292,7 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 
 	s.from = from
 	s.domainID = d.ID
+	s.sendLimit = d.MonthlySendLimit
 	return nil
 }
 
@@ -309,6 +312,20 @@ func (s *session) Rcpt(to string, _ *smtp.RcptOptions) error {
 			Code:         501,
 			EnhancedCode: smtp.EnhancedCode{5, 1, 3},
 			Message:      "Malformed recipient address",
+		}
+	}
+	if s.sendLimit != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		sent, err := s.srv.db.SentThisMonth(ctx, s.domainID, time.Now())
+		if err != nil {
+			s.log.Error("submission: sending usage lookup failed", "error", err)
+			return tempError("temporarily unable to accept submissions")
+		}
+		if sent+int64(len(s.rcpts))+1 > *s.sendLimit {
+			s.log.Warn("submission refused: monthly sending limit reached",
+				"from", s.from, "sent", sent, "limit", *s.sendLimit)
+			return sendLimitError()
 		}
 	}
 	s.rcpts = append(s.rcpts, to)
@@ -385,6 +402,20 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	now := time.Now().UTC()
+	recipients := int64(len(s.rcpts))
+	reserved, before, err := s.srv.db.ReserveSends(ctx, s.domainID, recipients, s.sendLimit, now)
+	if err != nil {
+		s.srv.blobs.Delete(id)
+		s.log.Error("submission: sending usage update failed", "id", id, "error", err)
+		return tempError("temporarily unable to store the message")
+	}
+	if !reserved {
+		s.srv.blobs.Delete(id)
+		s.log.Warn("submission refused: monthly sending limit reached",
+			"from", s.from, "sent", before, "recipients", recipients, "limit", *s.sendLimit)
+		return sendLimitError()
+	}
+
 	msg := &store.Message{
 		ID:           id,
 		DomainID:     s.domainID,
@@ -400,6 +431,9 @@ func (s *session) Data(r io.Reader) error {
 	}
 	if err := s.srv.db.Enqueue(ctx, msg); err != nil {
 		s.srv.blobs.Delete(id)
+		if err := s.srv.db.ReleaseSends(ctx, s.domainID, recipients, now); err != nil {
+			s.log.Warn("submission: sending usage not released", "id", id, "error", err)
+		}
 		s.log.Error("submission enqueue failed", "id", id, "error", err)
 		return tempError("temporarily unable to store the message")
 	}
@@ -424,7 +458,33 @@ func (s *session) Data(r io.Reader) error {
 			"id": id, "direction": "outbound", "subject": subject,
 		})
 	}
+	if s.sendLimit != nil && before < *s.sendLimit && before+recipients >= *s.sendLimit {
+		s.limitReached(ctx, *s.sendLimit)
+	}
 	return nil
+}
+
+func (s *session) limitReached(ctx context.Context, limit int64) {
+	domainID := s.domainID
+	domain := domainOf(s.from)
+	s.log.Warn("monthly sending limit reached", "domain", domain, "limit", limit)
+	if err := s.srv.db.RecordEvent(ctx, &store.Event{
+		Type: store.EventSendLimitReached, DomainID: &domainID,
+		Data: map[string]any{"domain": domain, "limit": limit, "submitted_by": s.user.Username},
+	}); err != nil {
+		s.log.Warn("submission event not recorded", "error", err)
+	}
+	if s.srv.notify != nil {
+		s.srv.notify.Notify(store.EventSendLimitReached, map[string]any{"domain": domain, "limit": limit})
+	}
+}
+
+func sendLimitError() *smtp.SMTPError {
+	return &smtp.SMTPError{
+		Code:         550,
+		EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+		Message:      "This domain has reached its monthly sending limit",
+	}
 }
 
 func tempError(msg string) *smtp.SMTPError {

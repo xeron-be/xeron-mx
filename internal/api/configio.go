@@ -33,6 +33,7 @@ type configDomain struct {
 	PrimaryPort      int    `yaml:"primary_port,omitempty"`
 	PrimaryTLS       string `yaml:"primary_tls,omitempty"`
 	MaxQueueMessages *int64 `yaml:"max_queue_messages,omitempty"`
+	MonthlySendLimit *int64 `yaml:"monthly_send_limit,omitempty"`
 	RetentionHours   int    `yaml:"retention_hours,omitempty"`
 	Enabled          *bool  `yaml:"enabled,omitempty"`
 
@@ -82,6 +83,7 @@ func (s *Server) ExportConfigYAML(ctx context.Context) ([]byte, error) {
 			PrimaryPort:      d.PrimaryPort,
 			PrimaryTLS:       d.PrimaryTLS,
 			MaxQueueMessages: d.MaxQueueMessages,
+			MonthlySendLimit: d.MonthlySendLimit,
 			RetentionHours:   d.RetentionHours,
 			Enabled:          &enabled,
 		}
@@ -261,6 +263,7 @@ func (s *Server) planImport(ctx context.Context, doc *configDocument) (*importPl
 			PrimaryPort:      cd.PrimaryPort,
 			PrimaryTLS:       cd.PrimaryTLS,
 			MaxQueueMessages: cd.MaxQueueMessages,
+			MonthlySendLimit: cd.MonthlySendLimit,
 			RetentionHours:   cd.RetentionHours,
 			Enabled:          cd.Enabled,
 		}
@@ -406,12 +409,17 @@ func sameDomain(a, b *store.Domain) bool {
 		a.Enabled != b.Enabled {
 		return false
 	}
+	return sameLimit(a.MaxQueueMessages, b.MaxQueueMessages) &&
+		sameLimit(a.MonthlySendLimit, b.MonthlySendLimit)
+}
+
+func sameLimit(a, b *int64) bool {
 	switch {
-	case a.MaxQueueMessages == nil && b.MaxQueueMessages == nil:
+	case a == nil && b == nil:
 		return true
-	case a.MaxQueueMessages == nil || b.MaxQueueMessages == nil:
+	case a == nil || b == nil:
 		return false
 	default:
-		return *a.MaxQueueMessages == *b.MaxQueueMessages
+		return *a == *b
 	}
 }

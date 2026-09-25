@@ -168,6 +168,8 @@ export interface Domain {
     primary_tls: "none" | "opportunistic" | "starttls" | "tls";
     retention_hours: number;
     max_queue_messages: number | null;
+    monthly_send_limit: number | null;
+    sent_this_month?: number;
     enabled: boolean;
     created_at: string;
     primary?: PrimaryState;
@@ -392,6 +394,7 @@ export interface DomainInput {
     primary_port?: number;
     primary_tls?: string;
     retention_hours?: number;
+    monthly_send_limit?: number;
     enabled?: boolean;
 }
 

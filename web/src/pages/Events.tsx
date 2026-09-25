@@ -28,7 +28,7 @@ export function Events({ refreshKey }: { refreshKey: number }) {
                         {list.data.events.map((e) => (
                             <li key={e.id} style={{ flexWrap: "wrap" }}>
                                 <time title={absolute(e.created_at)}>{relative(e.created_at)}</time>
-                                <Pill tone={eventTone(e.type)}>{eventLabel(e.type)}</Pill>
+                                <Pill tone={eventTone(e.type)}>{timelineLabel(e)}</Pill>
                                 <span style={{ color: "var(--muted)", fontSize: ".85rem", flex: 1, minWidth: 0 }}>
                                     {describeEvent(e)}
                                 </span>
@@ -63,6 +63,11 @@ function text(v: unknown): string {
     if (Array.isArray(v)) return v.map(text).join(", ");
     if (typeof v === "object") return JSON.stringify(v);
     return String(v);
+}
+
+export function timelineLabel(e: TimelineEvent): string {
+    if (e.type === "mail_delivered" && e.data?.direction === "outbound") return translate("ev.mail_sent");
+    return eventLabel(e.type);
 }
 
 export function describeEvent(e: TimelineEvent): string {
@@ -100,19 +105,25 @@ export function describeEvent(e: TimelineEvent): string {
     return parts.join(" · ");
 }
 
-function Details({ e }: { e: TimelineEvent }) {
+export function detailRows(e: TimelineEvent): [string, string][] {
     const rows: [string, string][] = [];
     const add = (key: string, value: unknown) => {
         const v = text(value);
         if (v !== "") rows.push([label("events.field", key), v]);
     };
-    add("user", e.user);
+    const data = e.data ?? {};
+    if (data.by !== e.user) add("user", e.user);
     add("domain_name", e.domain_name);
     add("queue_id", e.queue_id);
-    for (const [k, v] of Object.entries(e.data ?? {})) {
+    for (const [k, v] of Object.entries(data)) {
+        if (k === "domain" && v === e.domain_name) continue;
         add(k, k === "reason" && typeof v === "string" ? `${label("events.reason", v)} (${v})` : v);
     }
+    return rows;
+}
 
+function Details({ e }: { e: TimelineEvent }) {
+    const rows = detailRows(e);
     return (
         <dl
             style={{
@@ -128,8 +139,8 @@ function Details({ e }: { e: TimelineEvent }) {
                 fontSize: ".82rem",
             }}
         >
-            {rows.map(([k, v]) => (
-                <div key={k} style={{ display: "contents" }}>
+            {rows.map(([k, v], i) => (
+                <div key={i} style={{ display: "contents" }}>
                     <dt style={{ color: "var(--muted)" }}>{k}</dt>
                     <dd style={{ margin: 0, wordBreak: "break-word", fontFamily: "var(--mono, monospace)" }}>{v}</dd>
                 </div>

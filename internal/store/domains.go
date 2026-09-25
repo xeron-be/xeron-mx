@@ -19,11 +19,11 @@ func (db *DB) CreateDomain(ctx context.Context, d *Domain) (int64, error) {
 
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO domains (name, primary_host, primary_port, primary_tls,
-		                     max_queue_messages, retention_hours, enabled,
+		                     max_queue_messages, monthly_send_limit, retention_hours, enabled,
 		                     created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		normalizeDomain(d.Name), d.PrimaryHost, d.PrimaryPort, d.PrimaryTLS,
-		d.MaxQueueMessages, d.RetentionHours, boolToInt(d.Enabled),
+		d.MaxQueueMessages, d.MonthlySendLimit, d.RetentionHours, boolToInt(d.Enabled),
 		formatTime(now), formatTime(now))
 	if err != nil {
 		return 0, fmt.Errorf("store: create domain: %w", err)
@@ -72,9 +72,10 @@ func (db *DB) UpdateDomain(ctx context.Context, d *Domain) error {
 	return db.exec(ctx, `
 		UPDATE domains
 		SET primary_host = ?, primary_port = ?, primary_tls = ?,
-		    max_queue_messages = ?, retention_hours = ?, enabled = ?, updated_at = ?
+		    max_queue_messages = ?, monthly_send_limit = ?, retention_hours = ?, enabled = ?,
+		    updated_at = ?
 		WHERE id = ?`,
-		d.PrimaryHost, d.PrimaryPort, d.PrimaryTLS, d.MaxQueueMessages,
+		d.PrimaryHost, d.PrimaryPort, d.PrimaryTLS, d.MaxQueueMessages, d.MonthlySendLimit,
 		d.RetentionHours, boolToInt(d.Enabled), formatTime(time.Now().UTC()), d.ID)
 }
 
@@ -84,7 +85,7 @@ func (db *DB) DeleteDomain(ctx context.Context, id int64) error {
 
 const domainCols = `
 	SELECT id, name, primary_host, primary_port, primary_tls,
-	       max_queue_messages, retention_hours, enabled, created_at, updated_at
+	       max_queue_messages, monthly_send_limit, retention_hours, enabled, created_at, updated_at
 	FROM domains`
 
 type rowScanner interface {
@@ -103,12 +104,13 @@ func scanDomainRow(row rowScanner) (*Domain, error) {
 	var (
 		d        Domain
 		maxQueue sql.NullInt64
+		maxSent  sql.NullInt64
 		enabled  int
 		created  string
 		updated  string
 	)
 	if err := row.Scan(&d.ID, &d.Name, &d.PrimaryHost, &d.PrimaryPort, &d.PrimaryTLS,
-		&maxQueue, &d.RetentionHours, &enabled, &created, &updated); err != nil {
+		&maxQueue, &maxSent, &d.RetentionHours, &enabled, &created, &updated); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, sql.ErrNoRows
 		}
@@ -116,6 +118,9 @@ func scanDomainRow(row rowScanner) (*Domain, error) {
 	}
 	if maxQueue.Valid {
 		d.MaxQueueMessages = &maxQueue.Int64
+	}
+	if maxSent.Valid {
+		d.MonthlySendLimit = &maxSent.Int64
 	}
 	d.Enabled = enabled != 0
 	var err error
@@ -241,6 +246,7 @@ const (
 	EventLoginFailed      = "login_failed"
 	EventStartup          = "startup"
 	EventMaintenanceDrain = "maintenance_drain"
+	EventSendLimitReached = "send_limit_reached"
 )
 
 type Event struct {

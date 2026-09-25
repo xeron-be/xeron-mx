@@ -6,8 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The timeline no longer labels outbound mail "delivered to the primary": a
+  delivery of submitted mail records `direction: outbound` and shows as sent to
+  the recipient, and every delivery event lists its recipients. The details
+  panel no longer repeats the domain (resolved name and `domain` field) or the
+  account (resolved user and `by`)
+
 ### Added
 
+- A monthly sending limit per domain (`monthly_send_limit`, off by default),
+  counted in recipients submitted on port 587 and reset on the 1st of each
+  month (UTC). Past it, submission answers `550 5.7.1` for that domain only,
+  and the timeline records `send_limit_reached` once per month. The domain API
+  reports `sent_this_month`, and the panel shows the usage and sets the limit
+- Domains that share a primary (same host, port and TLS mode) are probed once
+  per health round instead of once each, so a mail server hosting many domains
+  sees one connection every interval rather than one per domain
 - A detailed timeline. Every action taken through the panel or the API records
   the account that did it, the API token when one was used, and the client
   address; failed logins say why (unknown account, wrong password, wrong code,

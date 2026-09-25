@@ -85,6 +85,7 @@ const EVENT_KEYS: Record<string, TranslationKey> = {
     user_updated: "ev.user_updated",
     user_deleted: "ev.user_deleted",
     maintenance_drain: "ev.maintenance_drain",
+    send_limit_reached: "ev.send_limit_reached",
     recipients_updated: "ev.recipients_updated",
     password_changed: "ev.password_changed",
     totp_enabled: "ev.totp_enabled",

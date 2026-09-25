@@ -25,6 +25,8 @@ type primary struct {
 	host string
 	port int
 
+	accepted atomic.Int32
+
 	refuse atomic.Bool
 	silent atomic.Bool
 }
@@ -51,6 +53,7 @@ func startPrimary(t *testing.T) *primary {
 			if err != nil {
 				return
 			}
+			p.accepted.Add(1)
 			conns.Add(1)
 			go func() {
 				defer conns.Done()
@@ -153,8 +156,13 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) domain(host string, port int, enabled bool) int64 {
 	h.t.Helper()
+	return h.named("example.test", host, port, enabled)
+}
+
+func (h *harness) named(name, host string, port int, enabled bool) int64 {
+	h.t.Helper()
 	id, err := h.db.CreateDomain(context.Background(), &store.Domain{
-		Name: "example.test", PrimaryHost: host, PrimaryPort: port,
+		Name: name, PrimaryHost: host, PrimaryPort: port,
 		PrimaryTLS: "none", RetentionHours: 168, Enabled: enabled,
 	})
 	if err != nil {
@@ -327,6 +335,46 @@ func TestRecoveryPullsTheQueueForward(t *testing.T) {
 	}
 	if m.NextRetryAt.After(time.Now().UTC()) {
 		t.Fatalf("next retry still at %v after the primary recovered; want it due now", m.NextRetryAt)
+	}
+}
+
+func TestDomainsSharingAPrimaryAreProbedOnce(t *testing.T) {
+	h := newHarness(t)
+	p := startPrimary(t)
+	other := startPrimary(t)
+	first := h.named("one.example.test", p.host, p.port, true)
+	second := h.named("two.example.test", strings.ToUpper(p.host)+".", p.port, true)
+	third := h.named("three.example.test", p.host, p.port, true)
+	elsewhere := h.named("elsewhere.example.test", other.host, other.port, true)
+
+	h.check(2)
+	if got := p.accepted.Load(); got != 2 {
+		t.Fatalf("the shared primary saw %d connections over two rounds; want one per round", got)
+	}
+	if got := other.accepted.Load(); got != 2 {
+		t.Fatalf("the other primary saw %d connections over two rounds; want 2", got)
+	}
+	for _, id := range []int64{first, second, third, elsewhere} {
+		if !h.status(id).IsUp {
+			t.Fatalf("domain %d not marked up from the shared probe", id)
+		}
+	}
+	if got := h.timeline(); len(got) != 4 {
+		t.Fatalf("timeline = %v; want one primary_up per domain", got)
+	}
+	if total := h.count.ProbesTotal.Load(); total != 4 {
+		t.Fatalf("probe counter = %d; want 4 (two primaries, two rounds)", total)
+	}
+
+	p.refuse.Store(true)
+	h.check(3)
+	for _, id := range []int64{first, second, third} {
+		if h.status(id).IsUp {
+			t.Fatalf("domain %d still up after its shared primary failed three times", id)
+		}
+	}
+	if !h.status(elsewhere).IsUp {
+		t.Fatal("a domain on another primary went down with the shared one")
 	}
 }
 

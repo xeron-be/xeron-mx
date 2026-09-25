@@ -190,6 +190,7 @@ function DomainCard({
     const [dmarc, setDmarc] = useState<DMARCInfo | null>(null);
     const [dmarcLoading, setDmarcLoading] = useState(false);
     const [showRecipients, setShowRecipients] = useState(false);
+    const [showSendLimit, setShowSendLimit] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
 
@@ -300,6 +301,16 @@ function DomainCard({
                         </span>{" "}
                         · {domain.primary_tls} · {t("domains.holds", { h: domain.retention_hours })}{" "}
                         · {t("domains.waiting", { n: domain.pending ?? 0 })}
+                        {domain.monthly_send_limit != null && (
+                            <>
+                                {" "}
+                                ·{" "}
+                                {t("domains.sentThisMonth", {
+                                    n: domain.sent_this_month ?? 0,
+                                    max: domain.monthly_send_limit,
+                                })}
+                            </>
+                        )}
                     </p>
                 </div>
                 <div className="row">
@@ -315,6 +326,11 @@ function DomainCard({
                     <button className="btn-sm" onClick={() => setShowRecipients(!showRecipients)}>
                         {t("domains.recipients")}
                     </button>
+                    {canEdit && (
+                        <button className="btn-sm" onClick={() => setShowSendLimit(!showSendLimit)}>
+                            {t("domains.sendLimit")}
+                        </button>
+                    )}
                     {canTest && (
                         <button className="btn-sm" onClick={runProbe} disabled={busy}>
                             {busy ? t("domains.testing") : t("domains.testConnection")}
@@ -408,6 +424,8 @@ function DomainCard({
 
             {showRecipients && <RecipientsSection domain={domain} canEdit={canEdit} onChanged={onChanged} />}
 
+            {showSendLimit && <SendLimitSection domain={domain} onChanged={onChanged} />}
+
             {showDmarc && (
                 <DMARCSection
                     domain={domain}
@@ -419,6 +437,55 @@ function DomainCard({
                 />
             )}
         </Card>
+    );
+}
+
+function SendLimitSection({ domain, onChanged }: { domain: Domain; onChanged: () => void }) {
+    const t = useT();
+    const [value, setValue] = useState(domain.monthly_send_limit?.toString() ?? "");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    const [saved, setSaved] = useState(false);
+
+    async function save(e: FormEvent) {
+        e.preventDefault();
+        setBusy(true);
+        setError("");
+        setSaved(false);
+        try {
+            const n = Number.parseInt(value, 10);
+            await api.updateDomain(domain.id, { monthly_send_limit: Number.isNaN(n) ? 0 : n });
+            setSaved(true);
+            onChanged();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : t("domains.couldNotUpdate"));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    return (
+        <form onSubmit={save} style={{ marginTop: "1rem" }}>
+            <h3 style={{ margin: "0 0 .4rem" }}>{t("domains.sendLimitTitle")}</h3>
+            <p className="hint">{t("domains.sendLimitHint")}</p>
+            {error && <Alert>{error}</Alert>}
+            {saved && <Alert tone="ok">{t("domains.sendLimitSaved")}</Alert>}
+            <div className="row">
+                <label>
+                    {t("domains.sendLimitLabel")}
+                    <input
+                        type="number"
+                        min={1}
+                        value={value}
+                        placeholder={t("domains.sendLimitNone")}
+                        onChange={(e) => setValue(e.target.value)}
+                    />
+                </label>
+                <button type="submit" className="btn-sm" disabled={busy}>
+                    {t("common.save")}
+                </button>
+            </div>
+        </form>
     );
 }
 
