@@ -13,6 +13,7 @@ import (
 func viaSES(relay *primary) func(*config.Config) {
 	return func(c *config.Config) {
 		viaRelay(relay)(c)
+		c.Outbound.SES.Region = "eu-west-3"
 		c.Outbound.SES.ConfigurationSet = "xeronmx"
 	}
 }
@@ -77,5 +78,39 @@ func TestBouncesXeronMXWritesAreNotCountedAsTheDomainsMail(t *testing.T) {
 	}
 	if w, _ := h.db.SendingStats(context.Background(), h.domainID, time.Now().Add(-time.Hour)); w.Sent != 0 {
 		t.Fatalf("sent = %d; a bounce from the null sender was counted", w.Sent)
+	}
+}
+
+func TestMailThroughSESIsLeftForSESToSign(t *testing.T) {
+	relay := startPrimary(t)
+	p := startPrimary(t)
+	h := newHarness(t, p.host, p.port, 5*time.Second, viaSES(relay))
+	storeKey(t, h.db, h.blobs, h.domainID, true)
+	signedUpstream := "DKIM-Signature: v=1; a=rsa-sha256; d=example.test; s=upstream; h=From; bh=AAAA; b=BBBB\r\n" + testBody
+	h.enqueueMessage(signedUpstream, 24*time.Hour, outboundFrom("boss@example.test"), "a@far.test")
+
+	h.pass()
+
+	txs := relay.transactions()
+	if len(txs) != 1 {
+		t.Fatalf("relayed %d messages; want 1", len(txs))
+	}
+	if n := strings.Count(txs[0].body, "DKIM-Signature:"); n != 1 {
+		t.Fatalf("relayed with %d DKIM-Signature headers; SES refuses more than one:\n%s", n, txs[0].body)
+	}
+}
+
+func TestMailThroughAnotherRelayIsStillSigned(t *testing.T) {
+	relay := startPrimary(t)
+	p := startPrimary(t)
+	h := newHarness(t, p.host, p.port, 5*time.Second, viaRelay(relay))
+	storeKey(t, h.db, h.blobs, h.domainID, true)
+	h.enqueueMessage(testBody, 24*time.Hour, outboundFrom("boss@example.test"), "a@far.test")
+
+	h.pass()
+
+	txs := relay.transactions()
+	if len(txs) != 1 || !strings.Contains(txs[0].body, "DKIM-Signature:") {
+		t.Fatalf("relayed %v; want one message signed by XeronMX", txs)
 	}
 }
