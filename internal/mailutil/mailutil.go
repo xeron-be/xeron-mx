@@ -5,8 +5,25 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"io"
+	"mime"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/htmlindex"
 )
+
+const maxSubjectBytes = 500
+
+var wordDecoder = &mime.WordDecoder{CharsetReader: charsetReader}
+
+func charsetReader(charset string, input io.Reader) (io.Reader, error) {
+	enc, err := htmlindex.Get(charset)
+	if err != nil {
+		return nil, err
+	}
+	return enc.NewDecoder().Reader(input), nil
+}
 
 func NewID() (string, error) {
 	b := make([]byte, 16)
@@ -39,10 +56,33 @@ func ExtractSubject(head []byte) string {
 			}
 			subject += " " + strings.TrimSpace(cont)
 		}
-		if len(subject) > 500 {
-			subject = subject[:500]
-		}
-		return strings.ToValidUTF8(subject, "")
+		return DecodeHeader(subject)
 	}
 	return ""
+}
+
+func DecodeHeader(value string) string {
+	if strings.Contains(value, "=?") {
+		if decoded, err := wordDecoder.DecodeHeader(value); err == nil {
+			value = decoded
+		}
+	}
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(value, ""))
+	return truncateUTF8(strings.TrimSpace(value), maxSubjectBytes)
+}
+
+func truncateUTF8(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

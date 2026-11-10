@@ -10,6 +10,8 @@ import (
 	"math/rand"
 	"strings"
 	"time"
+
+	"github.com/xeron-be/xeron-mx/internal/mailutil"
 )
 
 var ErrNotFound = errors.New("store: not found")
@@ -429,6 +431,7 @@ func scanMessages(rows *sql.Rows) ([]*Message, error) {
 			&m.AuthResults, &senderAuth, &m.MalwareScan); err != nil {
 			return nil, fmt.Errorf("store: scan message: %w", err)
 		}
+		m.Subject = mailutil.DecodeHeader(m.Subject)
 		var qErr error
 		if m.QuarantinedAt, qErr = nullTime(quarantined); qErr != nil {
 			return nil, qErr

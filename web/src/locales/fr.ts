@@ -284,6 +284,7 @@ export const fr: Catalog = {
     "queue.delete": "Supprimer",
     "queue.downloadRaw": "Télécharger le message brut",
     "queue.downloadNote": "C'est le courrier de quelqu'un d'autre. Chaque téléchargement est inscrit dans le journal d'audit.",
+    "queue.rawGone": "Le message brut n'est plus disponible : son corps est retiré de la file d'attente une fois le message livré, rejeté ou expiré.",
 
     "sending.title": "Envoi",
     "sending.subtitle":

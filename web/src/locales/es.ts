@@ -284,6 +284,7 @@ export const es: Catalog = {
     "queue.delete": "Eliminar",
     "queue.downloadRaw": "Descargar el mensaje original",
     "queue.downloadNote": "Es el correo de otra persona. Cada descarga queda registrada en el historial de auditoría.",
+    "queue.rawGone": "El mensaje original ya no está disponible: su contenido se elimina de la cola una vez que el mensaje se entrega, se rechaza o caduca.",
 
     "sending.title": "Envío",
     "sending.subtitle":

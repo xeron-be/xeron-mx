@@ -358,12 +358,20 @@ function Detail({ message, canEdit }: { message: Message; canEdit: boolean }) {
             )}
             {canEdit && (
                 <div style={{ marginTop: ".3rem" }}>
-                    <a href={api.rawMessageUrl(message.id)} download={`${message.id}.eml`}>
-                        {t("queue.downloadRaw")}
-                    </a>
-                    <div className="hint">
-                        {t("queue.downloadNote")}
-                    </div>
+                    {message.status === "queued" || message.status === "delivering" ? (
+                        <>
+                            <a href={api.rawMessageUrl(message.id)} download={`${message.id}.eml`}>
+                                {t("queue.downloadRaw")}
+                            </a>
+                            <div className="hint">
+                                {t("queue.downloadNote")}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="hint">
+                            {t("queue.rawGone")}
+                        </div>
+                    )}
                 </div>
             )}
         </div>
