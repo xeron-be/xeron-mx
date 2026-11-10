@@ -135,7 +135,14 @@ func (s *Sender) sendViaRelay(ctx context.Context, m *store.Message, body io.Rea
 		}
 	}
 
-	res, err := transmit(client, m, body, s.spamHeaders(m))
+	headers := s.spamHeaders(m)
+	tagged := s.outbound.SES.ConfigurationSet != "" && (override == nil || override.RelayHost == "")
+	if tagged {
+		headers = "X-SES-CONFIGURATION-SET: " + s.outbound.SES.ConfigurationSet + "\r\n" + headers
+	}
+
+	res, err := transmit(client, m, body, headers)
+	res.viaSES = tagged
 	if m.EnvelopeFrom == "" && refusedNullSender(err) {
 		fallback := BounceSender(s.heloName())
 		s.log.Warn("relay refuses the null sender, sending the bounce from "+fallback,
@@ -145,7 +152,9 @@ func (s *Sender) sendViaRelay(ctx context.Context, m *store.Message, body io.Rea
 		}
 		retry := *m
 		retry.EnvelopeFrom = fallback
-		return transmit(client, &retry, body, s.spamHeaders(m))
+		res, err := transmit(client, &retry, body, headers)
+		res.viaSES = tagged
+		return res, err
 	}
 	return res, err
 }
@@ -303,6 +312,8 @@ type recipients struct {
 	accepted []string
 	deferred []recipientFailure
 	rejected []recipientFailure
+
+	viaSES bool
 }
 
 func addresses(failures []recipientFailure) []string {

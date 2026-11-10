@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api, type Domain, type SMTPUser } from "../api";
+import { api, type Domain, type SESOverview, type SMTPUser } from "../api";
 import { relative } from "../format";
 import { Alert, Card, Empty, PageHead, Pill } from "../components/ui";
 import { useAsync } from "../useAsync";
@@ -19,6 +19,7 @@ export function Sending({
     const [error, setError] = useState("");
     const accounts = useAsync<{ accounts: SMTPUser[] }>(api.listSMTPUsers, [refreshKey]);
     const domains = useAsync<{ domains: Domain[] }>(api.listDomains, [refreshKey]);
+    const ses = useAsync<SESOverview>(api.sesOverview, [refreshKey]);
 
     async function toggle(u: SMTPUser) {
         setError("");
@@ -59,6 +60,8 @@ export function Sending({
 
             {error && <Alert>{error}</Alert>}
             {accounts.error && <Alert>{accounts.error}</Alert>}
+
+            {ses.data && <SESCard ses={ses.data} />}
 
             {adding && (
                 <div style={{ marginBottom: "1rem" }}>
@@ -252,5 +255,60 @@ function AddAccount({
                 </div>
             </form>
         </Card>
+    );
+}
+
+function SESCard({ ses }: { ses: SESOverview }) {
+    const t = useT();
+    const bounce = ses.bounce_sender;
+    return (
+        <div style={{ marginBottom: "1rem" }}>
+            <Card>
+                <h2 style={{ marginBottom: ".5rem" }}>{t("sending.sesTitle")}</h2>
+                {!ses.enabled ? (
+                    <p style={{ margin: 0, color: "var(--muted)" }}>{t("sending.sesOff")}</p>
+                ) : (
+                    <>
+                        <p style={{ margin: "0 0 .5rem" }}>{t("sending.sesOn", { region: ses.region ?? "" })}</p>
+                        {bounce && (
+                            <Alert tone={bounce.status === "verified" ? "ok" : bounce.status === "pending" ? "warn" : "bad"}>
+                                {t("sending.sesBounce", { sender: bounce.sender })}{" "}
+                                {bounce.status === "verified"
+                                    ? t("sending.sesBounceOk", { identity: bounce.identity ?? "" })
+                                    : bounce.status === "pending"
+                                      ? t("sending.sesBouncePending", { identity: bounce.identity ?? "" })
+                                      : bounce.status === "error"
+                                        ? t("sending.sesBounceError", { error: bounce.error ?? "" })
+                                        : t("sending.sesBounceMissing")}
+                            </Alert>
+                        )}
+                        {ses.events ? (
+                            <Alert tone={ses.events.last_error ? "bad" : "ok"}>
+                                {ses.events.last_error
+                                    ? t("sending.sesEventsError", { error: ses.events.last_error })
+                                    : t("sending.sesEventsOk", {
+                                          when: relative(ses.events.last_poll_at ?? null),
+                                          n: ses.events.recorded,
+                                      })}
+                                {ses.protection && (
+                                    <div style={{ marginTop: ".35rem", fontSize: ".85rem" }}>
+                                        {t("sending.sesProtection", {
+                                            sb: ses.protection.suspend_bounce_percent,
+                                            smin: ses.protection.suspend_min_bounces,
+                                            sc: ses.protection.suspend_complaints,
+                                            hours: ses.protection.window_hours,
+                                        })}
+                                    </div>
+                                )}
+                            </Alert>
+                        ) : (
+                            <p style={{ margin: ".5rem 0 0", fontSize: ".85rem", color: "var(--muted)" }}>
+                                {t("sending.sesEventsOff")}
+                            </p>
+                        )}
+                    </>
+                )}
+            </Card>
+        </div>
     );
 }

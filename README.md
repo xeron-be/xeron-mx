@@ -6,9 +6,9 @@
 
 *A resilient backup MX appliance with real-time visibility, encrypted spool, and full operational control.*
 
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![Built with](https://img.shields.io/badge/built%20with-Go-00add8.svg)](https://go.dev)
-[![Release](https://img.shields.io/badge/release-v1.0.0-green.svg)](https://github.com/xeron-be/xeron-mx/releases)
+[![Release](https://img.shields.io/badge/release-v1.1.0-green.svg)](https://github.com/xeron-be/xeron-mx/releases)
 
 </div>
 
@@ -153,6 +153,50 @@ For environments where the primary server can receive but cannot send directly (
 - Restrictable to authorized sender domains.
 - Direct delivery via recipient MX lookup or forwarding through an upstream smarthost.
 
+### Amazon SES Sending Identities
+When outbound mail is relayed through Amazon SES (`outbound.relay_host: email-smtp.<region>.amazonaws.com`), SES only sends for domains it has verified. Set `outbound.ses.region` and XeronMX manages those identities itself:
+- **On adding a domain**: if the domain, or a parent domain, already has an identity in SES that has not failed, it is used as is (a verified `example.com` covers `client.example.com`, so nothing is created and nothing more needs publishing). Otherwise XeronMX creates the identity with Easy DKIM (RSA 2048). An identity found already in SES, created by hand, is used but never deleted.
+- **Records and status in the panel**: the domain's *Amazon SES* section lists the three CNAME records to publish (DNS only, unproxied at Cloudflare) and the verification status, checked every `outbound.ses.check_interval` (15 minutes by default) or on demand. A change is recorded on the timeline (`ses_identity_verified`, `ses_identity_failed`), and a failure raises an alert.
+- **Submission follows SES**: a sender domain whose identity is still being verified is answered `451 4.7.1`, so the sending server keeps the message and retries; one SES has given up on gets `550 5.7.1`. An outage of the SES API keeps the last known status rather than stopping mail. Bounces are written by XeronMX and handed to the relay directly, so they are never gated; the *Sending* page says whether `MAILER-DAEMON@<smtp.hostname>` is covered by a verified identity, which SES requires.
+- **On deleting a domain**: the panel offers to delete its SES identity too, as a separate confirmation (`?ses_identity=delete` in the API). It is refused for an identity XeronMX did not create, one inherited from a parent, and one that other configured domains still send under.
+
+The IAM keys come from the environment only (`XERONMX_SES_ACCESS_KEY_ID`, `XERONMX_SES_SECRET_ACCESS_KEY`), never from the YAML file, and need only `ses:CreateEmailIdentity`, `ses:GetEmailIdentity` and `ses:DeleteEmailIdentity`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["ses:CreateEmailIdentity", "ses:GetEmailIdentity", "ses:DeleteEmailIdentity"],
+    "Resource": "arn:aws:ses:eu-west-3:<account-id>:identity/*"
+  }]
+}
+```
+
+They are not the SMTP credentials of the relay, which SES issues separately for `ses:SendRawEmail`. XeronMX calls the SESv2 API directly, signing with its own Signature Version 4 code (checked against AWS's published test vectors) rather than through the AWS SDK. Without `outbound.ses`, nothing about submission changes.
+
+### Sending Protection (Amazon SES)
+Amazon SES judges an account, not a sender: past about 5 % hard bounces or 0.1 % complaints it puts the whole account under review, and it can then pause it, every domain included. One customer writing to an old list could stop everybody's mail. XeronMX watches each domain and stops the one at fault first:
+- **What it reads**: with `outbound.ses.configuration_set` set, every message relayed through SES carries the `X-SES-CONFIGURATION-SET` header (SES removes it before delivery, and it is outside the DKIM signature). That configuration set publishes bounces and complaints to SNS, then to an SQS queue (`outbound.ses.events_queue_url`) that XeronMX long-polls with the same IAM user. Nothing on the node has to be reachable from the internet, and events wait in the queue while XeronMX is down.
+- **What it counts**, per sender domain over `outbound.ses.protection.window` (7 days): the recipients it sent through SES, the hard bounces and the complaints. Soft bounces, addresses already on a suppression list (SES never sent to them) and bounces of XeronMX's own bounces do not count, as with AWS. A duplicated SQS message counts once.
+- **What it does**: from 3 % hard bounces (at least 3) or 1 complaint, a warning on the timeline and an alert. From 5 % (at least 5) or 2 complaints, the domain's sending is suspended: submission answers `550 5.7.1` for that domain only, until an admin lifts the suspension from the panel, which restarts its count. Receiving is never affected. The minimums matter at low volume, where a single mistyped address would otherwise be 10 %; complaints are counted rather than rated, since one complaint already exceeds 0.1 % below a thousand mails.
+- **In the panel**: each domain's *Sending reputation* section shows its counts, the addresses that bounced or complained, and the suspend or lift button. Sending can also be suspended by hand, with or without SES.
+
+Setting it up in AWS (region `eu-west-3` here):
+
+```bash
+aws sesv2 create-configuration-set --configuration-set-name xeronmx
+aws sns create-topic --name xeronmx-ses-events
+aws sqs create-queue --queue-name xeronmx-ses-events   # then allow the topic to send to it
+aws sns subscribe --topic-arn <topic> --protocol sqs --notification-endpoint <queue-arn> \
+  --attributes RawMessageDelivery=true
+aws sesv2 create-configuration-set-event-destination --configuration-set-name xeronmx \
+  --event-destination-name to-sqs --event-destination \
+  'Enabled=true,MatchingEventTypes=BOUNCE,COMPLAINT,SnsDestination={TopicArn=<topic>}'
+```
+
+and add `sqs:ReceiveMessage` and `sqs:DeleteMessage` on the queue to the IAM user's policy.
+
 ### Cryptographic Signatures: DKIM & ARC
 - **DKIM Signing**: Generates and manages RSA-2048 and ed25519 signing keys per domain. Private keys are sealed with the master key. Signatures cover From, Reply-To, Subject, Date, To, Cc, Message-ID, In-Reply-To, References, MIME-Version, Content-Type and Content-Transfer-Encoding with relaxed canonicalization, and were verified end to end with dkimpy through a Postfix relay.
 - **ARC (Authenticated Received Chain, RFC 8617)**: Attaches `ARC-Seal`, `ARC-Message-Signature`, and `ARC-Authentication-Results` when forwarding mail to your primary server, carrying the SPF and DKIM results XeronMX checked when it received the message. Nothing is claimed that was not checked: with `smtp.sender_auth` off the seal records `none`. A message that already carries an ARC chain (Gmail and Microsoft 365 add one to everything they send) has that chain validated when it arrives, and the new set states the result (`cv=pass` or `cv=fail`); a chain that was already marked failed is not extended. Every accepted message also gets a `Received:` header naming the host that sent it, so the primary's own filters see the original hop.
@@ -279,6 +323,17 @@ clamav:
   addr: "tcp://clamav:3310"
   action: quarantine
 
+outbound:
+  enabled: true
+  mode: relay
+  relay_host: email-smtp.eu-west-3.amazonaws.com
+  relay_port: 587
+  ses:
+    region: eu-west-3           # keys: XERONMX_SES_ACCESS_KEY_ID / XERONMX_SES_SECRET_ACCESS_KEY
+    check_interval: 15m
+    configuration_set: xeronmx
+    events_queue_url: https://sqs.eu-west-3.amazonaws.com/<account-id>/xeronmx-ses-events
+
 dnsbl:
   enabled: false
   zones:
@@ -332,4 +387,8 @@ make check
 
 ## Licence
 
-Licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE). You are free to run, study, modify, and self-host XeronMX. If you provide modifications as a network service, source code must be made available under the same license terms.
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). The source is public, but XeronMX is not open source in the OSI sense: it may be run, studied, modified and shared for noncommercial purposes only. That covers personal use, hobby projects and testing, and use by charities, schools, public research, public safety or health organisations and government institutions.
+
+Any commercial use needs a separate licence from the author, whether that is selling XeronMX, offering it as a paid or hosted service, or running it for a business. Ask through [xeron.be](https://xeron.be).
+
+Releases up to and including 1.0.0 were published under the GNU Affero General Public License v3.0, and those releases remain available under its terms.

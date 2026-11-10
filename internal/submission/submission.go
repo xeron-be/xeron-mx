@@ -256,6 +256,18 @@ func (s *session) Mail(from string, _ *smtp.MailOptions) error {
 		s.log.Error("submission: domain lookup failed", "error", err)
 		return tempError("temporarily unable to accept submissions")
 	}
+	if err := s.srv.suspensionGate(ctx, d); err != nil {
+		s.log.Warn("submission refused: sending suspended for the domain",
+			"username", s.user.Username, "from", from, "error", err)
+		return err
+	}
+	if s.srv.cfg.SES.Enabled() {
+		if err := s.srv.sesGate(ctx, d); err != nil {
+			s.log.Warn("submission refused: sender domain not verified with Amazon SES",
+				"username", s.user.Username, "from", from, "error", err)
+			return err
+		}
+	}
 
 	stats, err := s.srv.db.Stats(ctx)
 	if err != nil {
@@ -484,6 +496,53 @@ func sendLimitError() *smtp.SMTPError {
 		Code:         550,
 		EnhancedCode: smtp.EnhancedCode{5, 7, 1},
 		Message:      "This domain has reached its monthly sending limit",
+	}
+}
+
+func (s *Server) suspensionGate(ctx context.Context, d *store.Domain) error {
+	st, err := s.db.SendingStateFor(ctx, d.ID)
+	if err != nil {
+		s.log.Error("submission: sending state lookup failed", "error", err)
+		return tempError("temporarily unable to accept submissions")
+	}
+	if !st.Suspended() {
+		return nil
+	}
+	msg := fmt.Sprintf("Sending from %s is suspended: too many bounces or complaints, contact your provider", d.Name)
+	if st.SuspendedReason == "manual" {
+		msg = fmt.Sprintf("Sending from %s is suspended by the administrator, contact your provider", d.Name)
+	}
+	return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: msg}
+}
+
+func (s *Server) sesGate(ctx context.Context, d *store.Domain) error {
+	row, err := s.db.SESIdentityFor(ctx, d.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return sesPending(d.Name)
+	}
+	if err != nil {
+		s.log.Error("submission: ses identity lookup failed", "error", err)
+		return tempError("temporarily unable to accept submissions")
+	}
+	switch row.Status {
+	case store.SESVerified:
+		return nil
+	case store.SESFailed:
+		return &smtp.SMTPError{
+			Code:         550,
+			EnhancedCode: smtp.EnhancedCode{5, 7, 1},
+			Message:      fmt.Sprintf("Sender domain %s failed verification with Amazon SES", d.Name),
+		}
+	default:
+		return sesPending(d.Name)
+	}
+}
+
+func sesPending(domain string) *smtp.SMTPError {
+	return &smtp.SMTPError{
+		Code:         451,
+		EnhancedCode: smtp.EnhancedCode{4, 7, 1},
+		Message:      fmt.Sprintf("Sender domain %s is not yet verified with Amazon SES, try again later", domain),
 	}
 }
 

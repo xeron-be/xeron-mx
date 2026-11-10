@@ -363,6 +363,9 @@ func (s *Server) planImport(ctx context.Context, doc *configDocument) (*importPl
 }
 
 func (s *Server) applyImport(ctx context.Context, plan *importPlan) error {
+	if s.ses != nil && len(plan.createDomains) > 0 {
+		defer s.ses.Trigger()
+	}
 	for _, d := range plan.createDomains {
 		if _, err := s.db.CreateDomain(ctx, d); err != nil {
 			return fmt.Errorf("create domain %s: %w", d.Name, err)

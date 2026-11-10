@@ -58,4 +58,4 @@ Do not report security vulnerabilities through public GitHub issues. Please foll
 
 ## Licence
 
-XeronMX is licensed under the AGPL-3.0. All contributions are accepted under this license.
+XeronMX is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for noncommercial use, with commercial use licensed separately by the author. All contributions are accepted under this licence. Releases up to and including 1.0.0 were published under the AGPL-3.0.

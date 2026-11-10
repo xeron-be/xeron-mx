@@ -247,6 +247,12 @@ const (
 	EventStartup          = "startup"
 	EventMaintenanceDrain = "maintenance_drain"
 	EventSendLimitReached = "send_limit_reached"
+	EventSESVerified      = "ses_identity_verified"
+	EventSESFailed        = "ses_identity_failed"
+	EventSESDeleted       = "ses_identity_deleted"
+	EventSendingWarning   = "sending_reputation_warning"
+	EventSendingSuspended = "sending_suspended"
+	EventSendingResumed   = "sending_resumed"
 )
 
 type Event struct {
@@ -416,6 +422,8 @@ func EventCatalogue() []EventCategory {
 		}},
 		{Name: "health", Types: []string{
 			EventPrimaryUp, EventPrimaryDown, EventQueueFull, EventStartup,
+			EventSESVerified, EventSESFailed,
+			EventSendingWarning, EventSendingSuspended,
 		}},
 		{Name: "admin", Types: []string{
 			EventLogin, EventLoginFailed, EventAdminRead, EventAdminDelete,
@@ -425,6 +433,7 @@ func EventCatalogue() []EventCategory {
 			EventRouteCreated, EventRouteDeleted, EventConfigImported,
 			EventTokenCreated, EventTokenDeleted, EventWebhookCreated,
 			EventWebhookUpdated, EventWebhookDeleted, EventClusterSynced,
+			EventSESDeleted, EventSendingResumed,
 		}},
 	}
 }

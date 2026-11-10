@@ -27,11 +27,13 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/dnsbl"
 	"github.com/xeron-be/xeron-mx/internal/filter"
 	"github.com/xeron-be/xeron-mx/internal/health"
+	"github.com/xeron-be/xeron-mx/internal/mailutil"
 	"github.com/xeron-be/xeron-mx/internal/maintenance"
 	"github.com/xeron-be/xeron-mx/internal/metrics"
 	"github.com/xeron-be/xeron-mx/internal/oidc"
 	"github.com/xeron-be/xeron-mx/internal/proxy"
 	"github.com/xeron-be/xeron-mx/internal/sender"
+	"github.com/xeron-be/xeron-mx/internal/ses"
 	"github.com/xeron-be/xeron-mx/internal/smtpd"
 	"github.com/xeron-be/xeron-mx/internal/spam"
 	"github.com/xeron-be/xeron-mx/internal/store"
@@ -146,6 +148,34 @@ func run() error {
 		db, log.With("component", "cluster"))
 	node.SetConfigSource(apiSrv)
 	apiSrv.SetCluster(node)
+
+	var (
+		sesMgr     *ses.Manager
+		reputation *ses.Monitor
+	)
+	if sc := cfg.Outbound.SES; sc.Enabled() {
+		client := ses.NewHTTPClient(sc.Region, sc.AccessKeyID, sc.SecretAccessKey)
+		if sc.Endpoint != "" {
+			client.Endpoint = sc.Endpoint
+		}
+		sesMgr = ses.NewManager(client, db, log.With("component", "ses"), notifier,
+			sc.Region, sc.CheckInterval, mailutil.Hostname(cfg.SMTP.Hostname))
+		apiSrv.SetSES(sesMgr)
+		if sc.ReputationEnabled() {
+			queue, err := ses.NewSQSQueue(sc.EventsQueueURL, sc.Region, sc.AccessKeyID, sc.SecretAccessKey)
+			if err != nil {
+				return err
+			}
+			reputation = ses.NewMonitor(queue, sc.EventsQueueURL, db, log.With("component", "ses-events"),
+				notifier, sc.Protection)
+			apiSrv.SetReputation(reputation)
+			log.Info("sending protection enabled", "configuration_set", sc.ConfigurationSet,
+				"window", sc.Protection.Window, "suspend_bounce_percent", sc.Protection.SuspendBouncePercent,
+				"suspend_complaints", sc.Protection.SuspendComplaints)
+		}
+		log.Info("amazon ses identity management enabled", "region", sc.Region,
+			"endpoint", client.Endpoint, "check_interval", sc.CheckInterval)
+	}
 
 	smtpSrv, err := smtpd.New(cfg.SMTP, cfg.Queue, db, blobs,
 		log.With("component", "smtpd"), notifier, counters, spamChecker, filters)
@@ -293,6 +323,21 @@ func run() error {
 		defer wg.Done()
 		checker.Run(ctx)
 	}()
+
+	if sesMgr != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sesMgr.Run(ctx)
+		}()
+	}
+	if reputation != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reputation.Run(ctx)
+		}()
+	}
 
 	wg.Add(1)
 	go func() {

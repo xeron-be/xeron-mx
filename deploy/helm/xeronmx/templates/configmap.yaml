@@ -96,6 +96,15 @@ the pod would refuse to start, on a value that looks perfectly reasonable.
 {{- $_ := set $out "relay_port" (int .Values.submission.relayPort) -}}
 {{- $_ := set $out "relay_tls" .Values.submission.relayTLS -}}
 {{- $_ := set $out "require_tls" .Values.submission.requireTLS -}}
+{{- with .Values.submission.ses -}}
+{{- if .region -}}
+{{- $_ := set $out "ses" (dict
+      "region" .region
+      "check_interval" (default "15m" .checkInterval)
+      "configuration_set" (default "" .configurationSet)
+      "events_queue_url" (default "" .eventsQueueURL)) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{- if .Values.alerts.enabled -}}

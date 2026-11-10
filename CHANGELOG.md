@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-10
+
+### Changed
+
+- The licence is now the PolyForm Noncommercial License 1.0.0 instead of the
+  AGPL-3.0. XeronMX may still be run, studied, modified and shared for any
+  noncommercial purpose; commercial use (selling it, offering it as a hosted
+  service, running it for a business) needs a separate licence from the author.
+  Releases up to and including 1.0.0 stay available under the AGPL-3.0
+
 ### Fixed
 
 - The timeline no longer labels outbound mail "delivered to the primary": a
@@ -16,6 +26,45 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Amazon SES identity management (`outbound.ses`, off unless a region is set).
+  For each configured domain, XeronMX creates the SES identity with Easy DKIM
+  (RSA 2048) and shows its three CNAME records in the panel, unless the domain
+  already has one or is a subdomain of an identity that exists and has not
+  failed (a verified domain covers its subdomains in SES). The verification is
+  followed every `check_interval` (15 minutes) and on demand, recorded as
+  `ses_identity_verified` and `ses_identity_failed` on the timeline (the latter
+  also alerts). Submission then refuses a sender domain SES would refuse:
+  `451 4.7.1` while it is being verified, so the sending server keeps the mail
+  and retries, `550 5.7.1` once SES has given up. Bounces are unaffected, and
+  the Sending page says whether `MAILER-DAEMON@<smtp.hostname>` is covered.
+  Deleting a domain can also delete its SES identity, only on request
+  (`?ses_identity=delete`) and only for one XeronMX created that no other
+  domain inherits. The IAM keys are read from `XERONMX_SES_ACCESS_KEY_ID` and
+  `XERONMX_SES_SECRET_ACCESS_KEY` only. SESv2 is called directly with a
+  Signature Version 4 implementation checked against AWS's test vectors, with
+  no AWS SDK dependency. New routes: `GET /api/v1/ses`,
+  `GET /api/v1/domains/:id/ses`, `POST /api/v1/domains/:id/ses/check`
+- Database schema v11 (table `ses_identities`), applied automatically on start
+- Per-domain sending protection for Amazon SES. AWS reviews, and can pause, a
+  whole account on its hard-bounce and complaint rates, so one customer
+  writing to an old list could stop every domain's mail. With
+  `outbound.ses.configuration_set` and `events_queue_url` set, mail relayed
+  through SES carries the configuration set, SES publishes its bounces and
+  complaints to an SQS queue, and XeronMX reads them back, counts them per
+  sender domain against the recipients it sent, and acts over a sliding window
+  (`outbound.ses.protection`, 7 days): a warning (timeline, alert) from 3 %
+  hard bounces with at least 3, or 1 complaint; a suspension from 5 % with at
+  least 5, or 2 complaints. A suspended domain's submissions get `550 5.7.1`
+  until an admin lifts it, which restarts its count; receiving is not
+  affected. Soft bounces and addresses already on a suppression list do not
+  count, as with AWS, and a duplicated SQS message counts once. Sending can
+  also be suspended by hand, with or without SES. The panel shows each
+  domain's counts and the addresses concerned. New routes:
+  `GET /api/v1/domains/:id/sending`, `POST /api/v1/domains/:id/sending/suspend`,
+  `POST /api/v1/domains/:id/sending/resume`; new events
+  `sending_reputation_warning`, `sending_suspended`, `sending_resumed`
+- Database schema v12 (tables `sending_stats`, `sending_feedback`,
+  `sending_state`), applied automatically on start
 - A monthly sending limit per domain (`monthly_send_limit`, off by default),
   counted in recipients submitted on port 587 and reset on the 1st of each
   month (UTC). Past it, submission answers `550 5.7.1` for that domain only,
@@ -677,5 +726,6 @@ otherwise take for an accident.
   the load balancer's address for every sender; configure the PROXY protocol
   (`smtp.proxyProtocolTrusted`) with such a balancer
 
-[Unreleased]: https://github.com/xeron-be/xeron-mx/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/xeron-be/xeron-mx/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/xeron-be/xeron-mx/releases/tag/v1.1.0
 [1.0.0]: https://github.com/xeron-be/xeron-mx/releases/tag/v1.0.0

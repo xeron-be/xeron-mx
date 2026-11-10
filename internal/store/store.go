@@ -42,7 +42,13 @@ var schemaV9SQL string
 //go:embed schema_v10.sql
 var schemaV10SQL string
 
-const schemaVersion = 10
+//go:embed schema_v11.sql
+var schemaV11SQL string
+
+//go:embed schema_v12.sql
+var schemaV12SQL string
+
+const schemaVersion = 12
 
 type DB struct {
 	*sql.DB
@@ -150,6 +156,16 @@ func (db *DB) migrate(ctx context.Context) error {
 	if current < 10 {
 		if _, err := tx.ExecContext(ctx, schemaV10SQL); err != nil {
 			return fmt.Errorf("store: apply schema v10: %w", err)
+		}
+	}
+	if current < 11 {
+		if _, err := tx.ExecContext(ctx, schemaV11SQL); err != nil {
+			return fmt.Errorf("store: apply schema v11: %w", err)
+		}
+	}
+	if current < 12 {
+		if _, err := tx.ExecContext(ctx, schemaV12SQL); err != nil {
+			return fmt.Errorf("store: apply schema v12: %w", err)
 		}
 	}
 

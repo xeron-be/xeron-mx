@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -151,6 +153,60 @@ type OutboundConfig struct {
 	MaxConnections int `yaml:"max_connections"`
 
 	RequireTLS bool `yaml:"require_tls"`
+
+	SES SESConfig `yaml:"ses"`
+}
+
+type SESConfig struct {
+	Region string `yaml:"region"`
+
+	CheckInterval time.Duration `yaml:"check_interval"`
+
+	Endpoint string `yaml:"endpoint"`
+
+	ConfigurationSet string `yaml:"configuration_set"`
+
+	EventsQueueURL string `yaml:"events_queue_url"`
+
+	Protection SendingProtection `yaml:"protection"`
+
+	AccessKeyID     string `yaml:"-"`
+	SecretAccessKey string `yaml:"-"`
+}
+
+func (s SESConfig) Enabled() bool { return s.Region != "" }
+
+func (s SESConfig) ReputationEnabled() bool { return s.Enabled() && s.EventsQueueURL != "" }
+
+type SendingProtection struct {
+	Window time.Duration `yaml:"window"`
+
+	WarnBouncePercent    float64 `yaml:"warn_bounce_percent"`
+	WarnMinBounces       int     `yaml:"warn_min_bounces"`
+	SuspendBouncePercent float64 `yaml:"suspend_bounce_percent"`
+	SuspendMinBounces    int     `yaml:"suspend_min_bounces"`
+
+	WarnComplaints    int `yaml:"warn_complaints"`
+	SuspendComplaints int `yaml:"suspend_complaints"`
+}
+
+var (
+	sesRegion    = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
+	sesConfigSet = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
+
+func (p SendingProtection) validate() error {
+	switch {
+	case p.Window < time.Hour:
+		return fmt.Errorf("window must be at least 1h")
+	case p.WarnBouncePercent <= 0 || p.SuspendBouncePercent < p.WarnBouncePercent || p.SuspendBouncePercent > 100:
+		return fmt.Errorf("bounce percentages must satisfy 0 < warn_bounce_percent <= suspend_bounce_percent <= 100")
+	case p.WarnMinBounces < 1 || p.SuspendMinBounces < p.WarnMinBounces:
+		return fmt.Errorf("bounce minimums must satisfy 1 <= warn_min_bounces <= suspend_min_bounces")
+	case p.WarnComplaints < 1 || p.SuspendComplaints < p.WarnComplaints:
+		return fmt.Errorf("complaint counts must satisfy 1 <= warn_complaints <= suspend_complaints")
+	}
+	return nil
 }
 
 type AlertConfig struct {
@@ -342,6 +398,18 @@ func Default() Config {
 			MaxMessageBytes: 50 << 20,
 			MaxConnections:  100,
 			RequireTLS:      true,
+			SES: SESConfig{
+				CheckInterval: 15 * time.Minute,
+				Protection: SendingProtection{
+					Window:               7 * 24 * time.Hour,
+					WarnBouncePercent:    3,
+					WarnMinBounces:       3,
+					SuspendBouncePercent: 5,
+					SuspendMinBounces:    5,
+					WarnComplaints:       1,
+					SuspendComplaints:    2,
+				},
+			},
 		},
 		Alerts: AlertConfig{
 			PrimaryDownAfter: 5 * time.Minute,
@@ -485,6 +553,13 @@ func applyEnv(cfg *Config) {
 	str("XERONMX_OUTBOUND_RELAY_TLS", &cfg.Outbound.RelayTLS)
 	str("XERONMX_OUTBOUND_RELAY_USERNAME", &cfg.Outbound.RelayUsername)
 	str("XERONMX_OUTBOUND_RELAY_PASSWORD", &cfg.Outbound.RelayPassword)
+	str("XERONMX_OUTBOUND_SES_REGION", &cfg.Outbound.SES.Region)
+	dur("XERONMX_OUTBOUND_SES_CHECK_INTERVAL", &cfg.Outbound.SES.CheckInterval)
+	str("XERONMX_OUTBOUND_SES_ENDPOINT", &cfg.Outbound.SES.Endpoint)
+	str("XERONMX_OUTBOUND_SES_CONFIGURATION_SET", &cfg.Outbound.SES.ConfigurationSet)
+	str("XERONMX_OUTBOUND_SES_EVENTS_QUEUE_URL", &cfg.Outbound.SES.EventsQueueURL)
+	str("XERONMX_SES_ACCESS_KEY_ID", &cfg.Outbound.SES.AccessKeyID)
+	str("XERONMX_SES_SECRET_ACCESS_KEY", &cfg.Outbound.SES.SecretAccessKey)
 	if v, ok := os.LookupEnv("XERONMX_OUTBOUND_RELAY_PORT"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Outbound.RelayPort = n
@@ -764,6 +839,44 @@ func (c *Config) Validate() error {
 		}
 		if c.Outbound.MaxMessageBytes <= 0 {
 			return fmt.Errorf("outbound.max_message_bytes must be positive")
+		}
+	}
+
+	if ses := c.Outbound.SES; ses.Enabled() {
+		if !c.Outbound.Enabled {
+			return fmt.Errorf("outbound.ses needs outbound.enabled: the identities only gate submission on port 587")
+		}
+		if !sesRegion.MatchString(ses.Region) {
+			return fmt.Errorf("outbound.ses.region must be an AWS region such as eu-west-3, got %q", ses.Region)
+		}
+		if ses.AccessKeyID == "" || ses.SecretAccessKey == "" {
+			return fmt.Errorf("outbound.ses.region is set but XERONMX_SES_ACCESS_KEY_ID and " +
+				"XERONMX_SES_SECRET_ACCESS_KEY are not: the IAM keys come from the environment only")
+		}
+		if ses.CheckInterval < time.Minute {
+			return fmt.Errorf("outbound.ses.check_interval must be at least 1m")
+		}
+		if ses.Endpoint != "" {
+			u, err := url.Parse(ses.Endpoint)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("outbound.ses.endpoint must be an http(s) URL, got %q", ses.Endpoint)
+			}
+		}
+		if ses.ConfigurationSet != "" && !sesConfigSet.MatchString(ses.ConfigurationSet) {
+			return fmt.Errorf("outbound.ses.configuration_set %q is not a valid SES configuration set name", ses.ConfigurationSet)
+		}
+		if ses.EventsQueueURL != "" {
+			u, err := url.Parse(ses.EventsQueueURL)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || len(u.Path) < 2 {
+				return fmt.Errorf("outbound.ses.events_queue_url must be the URL of an SQS queue, got %q", ses.EventsQueueURL)
+			}
+			if ses.ConfigurationSet == "" {
+				return fmt.Errorf("outbound.ses.events_queue_url needs outbound.ses.configuration_set: " +
+					"without it SES publishes no events for the mail XeronMX relays")
+			}
+			if err := ses.Protection.validate(); err != nil {
+				return fmt.Errorf("outbound.ses.protection: %w", err)
+			}
 		}
 	}
 
