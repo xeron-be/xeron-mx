@@ -14,22 +14,18 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
 
-// Why a domain was suspended or warned about, as recorded on its state and
-// shown in the panel.
 const (
 	ReasonBounces    = "bounces"
 	ReasonComplaints = "complaints"
 	ReasonManual     = "manual"
 )
 
-// Levels of a domain's sending reputation.
 const (
 	LevelOK        = "ok"
 	LevelWarning   = "warning"
 	LevelSuspended = "suspended"
 )
 
-// MonitorStatus is what the panel shows about the events queue itself.
 type MonitorStatus struct {
 	QueueURL   string     `json:"queue_url"`
 	LastPollAt *time.Time `json:"last_poll_at,omitempty"`
@@ -37,10 +33,6 @@ type MonitorStatus struct {
 	Recorded   int64      `json:"recorded"`
 }
 
-// Monitor reads the bounces and complaints SES publishes for the mail XeronMX
-// relays, counts them per sender domain, and warns about, then suspends, a
-// domain before its share of them can get the whole SES account reviewed or
-// paused (AWS acts on the account, not on one sender).
 type Monitor struct {
 	queue  Queue
 	db     *store.DB
@@ -101,9 +93,6 @@ func (m *Monitor) Run(ctx context.Context) {
 	}
 }
 
-// Poll reads one batch from the queue, records it, and deletes what it
-// recorded. A message whose feedback could not be stored is left on the
-// queue, to come back after its visibility timeout.
 func (m *Monitor) Poll(ctx context.Context) (int, error) {
 	msgs, err := m.queue.Receive(ctx)
 	now := m.now().UTC()
@@ -145,13 +134,9 @@ func (m *Monitor) Poll(ctx context.Context) (int, error) {
 	return recorded, nil
 }
 
-// record stores one queue message's feedback. It returns how many entries
-// were new, and whether the message can be deleted.
 func (m *Monitor) record(ctx context.Context, msg QueueMessage, touched map[int64]*store.Domain) (int, bool) {
 	feedback, err := ParseEvent(msg.Body)
 	if err != nil {
-		// Left on the queue it would come back forever; SQS's own redrive
-		// policy is the place for a dead-letter queue if one is wanted.
 		m.log.Warn("ses events: unreadable message dropped", "message_id", msg.ID, "error", err)
 		return 0, true
 	}
@@ -178,8 +163,6 @@ func (m *Monitor) record(ctx context.Context, msg QueueMessage, touched map[int6
 	return n, true
 }
 
-// domainOf finds the configured domain a feedback belongs to. Bounces of the
-// bounces XeronMX itself sends (MAILER-DAEMON@<hostname>) belong to nobody.
 func (m *Monitor) domainOf(ctx context.Context, sender string) *store.Domain {
 	at := strings.LastIndex(sender, "@")
 	if at <= 0 || strings.EqualFold(sender[:at], "mailer-daemon") {
@@ -195,7 +178,6 @@ func (m *Monitor) domainOf(ctx context.Context, sender string) *store.Domain {
 	return d
 }
 
-// Window returns the counts a domain is judged on, and its state.
 func (m *Monitor) Window(ctx context.Context, d *store.Domain) (*store.SendingWindow, *store.SendingState, error) {
 	st, err := m.db.SendingStateFor(ctx, d.ID)
 	if err != nil {
@@ -212,7 +194,6 @@ func (m *Monitor) Window(ctx context.Context, d *store.Domain) (*store.SendingWi
 	return w, st, nil
 }
 
-// Evaluate warns about or suspends the domain if its window calls for it.
 func (m *Monitor) Evaluate(ctx context.Context, d *store.Domain) error {
 	w, st, err := m.Window(ctx, d)
 	if err != nil {
@@ -277,9 +258,6 @@ func (m *Monitor) prune(ctx context.Context) {
 	}
 }
 
-// BouncePercent is the window's hard-bounce rate. Bounces can outnumber the
-// recorded sends (mail sent just before the window, or before the counters
-// existed), so they are measured against whichever is larger.
 func BouncePercent(w *store.SendingWindow) float64 {
 	base := max(w.Sent, w.Bounces)
 	if base == 0 {
@@ -288,8 +266,6 @@ func BouncePercent(w *store.SendingWindow) float64 {
 	return math.Round(1000*float64(w.Bounces)/float64(base)) / 10
 }
 
-// Assess applies the limits to a window. Complaints come first: they weigh far
-// more than bounces with AWS.
 func Assess(p config.SendingProtection, w *store.SendingWindow) (level, reason string) {
 	rate := 0.0
 	if base := max(w.Sent, w.Bounces); base > 0 {
@@ -308,12 +284,10 @@ func Assess(p config.SendingProtection, w *store.SendingWindow) (level, reason s
 	return LevelOK, ""
 }
 
-// Suspend stops a domain's sending by hand. It returns false if it already was.
 func (m *Monitor) Suspend(ctx context.Context, d *store.Domain, by string) (bool, error) {
 	return SuspendDomain(ctx, m.db, d, by, m.now())
 }
 
-// SuspendDomain is a manual suspension, which needs no SES at all.
 func SuspendDomain(ctx context.Context, db *store.DB, d *store.Domain, by string, at time.Time) (bool, error) {
 	changed, err := db.SuspendSending(ctx, d.ID, ReasonManual, by, at)
 	if err != nil {

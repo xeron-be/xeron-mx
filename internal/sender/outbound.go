@@ -136,10 +136,6 @@ func (s *Sender) sendViaRelay(ctx context.Context, m *store.Message, body io.Rea
 	}
 
 	headers := s.spamHeaders(m)
-	// Mail through the configured relay carries the SES configuration set, so
-	// that SES publishes its bounces and complaints whatever identity sends
-	// it. SES removes the header before delivery; it is outside the DKIM
-	// signature, which covers only the headers listed in it.
 	tagged := s.outbound.SES.ConfigurationSet != "" && (override == nil || override.RelayHost == "")
 	if tagged {
 		headers = "X-SES-CONFIGURATION-SET: " + s.outbound.SES.ConfigurationSet + "\r\n" + headers
@@ -317,8 +313,6 @@ type recipients struct {
 	deferred []recipientFailure
 	rejected []recipientFailure
 
-	// viaSES is set when the message went to SES tagged with the configuration
-	// set, so that its recipients count towards the sender's reputation.
 	viaSES bool
 }
 

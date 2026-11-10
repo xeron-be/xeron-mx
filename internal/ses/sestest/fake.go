@@ -1,5 +1,3 @@
-// Package sestest provides an in-memory stand-in for Amazon SES, so that no
-// test ever reaches AWS.
 package sestest
 
 import (
@@ -15,7 +13,6 @@ type Fake struct {
 	mu         sync.Mutex
 	identities map[string]*ses.Identity
 
-	// Err, when set, is returned by every call, as an unreachable SES would.
 	Err error
 
 	Creates []string
@@ -25,7 +22,6 @@ type Fake struct {
 
 func New() *Fake { return &Fake{identities: map[string]*ses.Identity{}} }
 
-// Put adds an identity as if it had been created outside XeronMX.
 func (f *Fake) Put(name, status string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -35,8 +31,6 @@ func (f *Fake) Put(name, status string) {
 	}
 }
 
-// SetStatus moves an existing identity to another state, as SES does once it
-// has read (or failed to read) the DKIM records.
 func (f *Fake) SetStatus(name, status string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

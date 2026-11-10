@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// Sending reputation timestamps use a fixed-width format so that they compare
-// correctly as strings in SQL (RFC3339Nano drops trailing zeros, and "…00Z"
-// would then sort after "…00.5Z").
 const (
 	sendingTimeFmt = "2006-01-02T15:04:05Z"
 	sendingHourFmt = "2006-01-02T15"
@@ -34,8 +31,6 @@ type SendingFeedback struct {
 	OccurredAt   time.Time
 }
 
-// SendingWindow is what a domain sent through SES, and what came back, since
-// a point in time.
 type SendingWindow struct {
 	Since      time.Time
 	Sent       int64
@@ -49,14 +44,11 @@ type SendingState struct {
 	SuspendedReason string
 	SuspendedBy     string
 	WarnedAt        *time.Time
-	// CountedSince is when an admin last lifted a suspension: feedback before
-	// it no longer counts, or the domain would be suspended again at once.
-	CountedSince *time.Time
+	CountedSince    *time.Time
 }
 
 func (s *SendingState) Suspended() bool { return s != nil && s.SuspendedAt != nil }
 
-// RecordSent adds n recipients handed to SES for the domain, in the hour of at.
 func (db *DB) RecordSent(ctx context.Context, domainID int64, n int, at time.Time) error {
 	if n <= 0 {
 		return nil
@@ -71,8 +63,6 @@ func (db *DB) RecordSent(ctx context.Context, domainID int64, n int, at time.Tim
 	return nil
 }
 
-// AddFeedback records one bounce or complaint, once: SQS delivers at least
-// once, so the same event can arrive twice. It reports whether it was new.
 func (db *DB) AddFeedback(ctx context.Context, f *SendingFeedback) (bool, error) {
 	res, err := db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO sending_feedback
@@ -156,8 +146,6 @@ func (db *DB) SendingStateFor(ctx context.Context, domainID int64) (*SendingStat
 	return &st, nil
 }
 
-// SuspendSending stops the domain's submissions. It reports whether the domain
-// was not already suspended, so that the event and the alert fire once.
 func (db *DB) SuspendSending(ctx context.Context, domainID int64, reason, by string, at time.Time) (bool, error) {
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO sending_state (domain_id, suspended_at, suspended_reason, suspended_by)
@@ -175,7 +163,6 @@ func (db *DB) SuspendSending(ctx context.Context, domainID int64, reason, by str
 	return n > 0, err
 }
 
-// ResumeSending lifts a suspension and starts counting afresh from at.
 func (db *DB) ResumeSending(ctx context.Context, domainID int64, at time.Time) (bool, error) {
 	res, err := db.ExecContext(ctx, `
 		UPDATE sending_state
@@ -189,8 +176,6 @@ func (db *DB) ResumeSending(ctx context.Context, domainID int64, at time.Time) (
 	return n > 0, err
 }
 
-// MarkSendingWarned records that the warning was given, so it is given once
-// per window rather than on every event.
 func (db *DB) MarkSendingWarned(ctx context.Context, domainID int64, at time.Time) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO sending_state (domain_id, warned_at) VALUES (?, ?)
@@ -202,7 +187,6 @@ func (db *DB) MarkSendingWarned(ctx context.Context, domainID int64, at time.Tim
 	return nil
 }
 
-// PruneSending forgets what is older than every window could look at.
 func (db *DB) PruneSending(ctx context.Context, before time.Time) error {
 	if _, err := db.ExecContext(ctx, `DELETE FROM sending_stats WHERE hour < ?`,
 		before.UTC().Format(sendingHourFmt)); err != nil {

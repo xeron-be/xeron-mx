@@ -16,9 +16,6 @@ const (
 	amzDateFmt   = "20060102T150405Z"
 )
 
-// Sign adds the AWS Signature Version 4 headers (X-Amz-Date, Authorization)
-// to req. It signs the Host header, X-Amz-* headers and Content-Type when set:
-// enough for SESv2, and the same set AWS's own test suite uses.
 func Sign(req *http.Request, body []byte, accessKey, secretKey, region, service string, now time.Time) {
 	amzDate := now.UTC().Format(amzDateFmt)
 	date := amzDate[:8]
@@ -53,7 +50,6 @@ func Sign(req *http.Request, body []byte, accessKey, secretKey, region, service 
 		", Signature="+signature)
 }
 
-// SigningKey derives the per-day, per-region, per-service key.
 func SigningKey(secretKey, date, region, service string) []byte {
 	k := hmacSHA256([]byte("AWS4"+secretKey), date)
 	k = hmacSHA256(k, region)
@@ -95,8 +91,6 @@ func canonicalHeaders(h http.Header, host string) ([]string, string) {
 	return names, b.String()
 }
 
-// canonicalURI encodes each path segment twice, as SigV4 requires of every
-// service but S3: once for the URI, once more for the canonical request.
 func canonicalURI(u *url.URL) string {
 	path := u.EscapedPath()
 	if path == "" {
@@ -127,8 +121,6 @@ func canonicalQuery(u *url.URL) string {
 	return strings.Join(parts, "&")
 }
 
-// uriEncode is RFC 3986 encoding with AWS's rules: everything but the
-// unreserved characters is percent-encoded, with upper-case hex.
 func uriEncode(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

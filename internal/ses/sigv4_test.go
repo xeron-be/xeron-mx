@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// The vectors below come from AWS's own documentation and Signature Version 4
-// test suite, so a mistake in our canonicalisation cannot hide behind a test
-// written to match it.
 const (
 	exampleKeyID  = "AKIDEXAMPLE"
 	exampleSecret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"

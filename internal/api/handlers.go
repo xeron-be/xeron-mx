@@ -555,9 +555,6 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The SES identity goes first and only when asked: once the domain row is
-	// gone nothing would remember which identity was ours to delete, and a
-	// refusal here leaves the domain in place to try again.
 	deleteSES := r.URL.Query().Get("ses_identity") == "delete"
 	if deleteSES {
 		if code, status := s.deleteSESIdentity(ctx, r, d); code != "" {

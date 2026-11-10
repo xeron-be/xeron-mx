@@ -11,21 +11,17 @@ import (
 	"time"
 )
 
-// QueueMessage is one message read from the events queue.
 type QueueMessage struct {
 	ID            string
 	ReceiptHandle string
 	Body          string
 }
 
-// Queue is the part of SQS the reputation monitor uses. Tests substitute a fake.
 type Queue interface {
 	Receive(ctx context.Context) ([]QueueMessage, error)
 	Delete(ctx context.Context, receiptHandles []string) error
 }
 
-// SQSQueue long-polls one SQS queue over the JSON protocol, signed with the
-// same Signature Version 4 code as the SES calls.
 type SQSQueue struct {
 	QueueURL  string
 	Endpoint  string
@@ -33,9 +29,8 @@ type SQSQueue struct {
 	AccessKey string
 	SecretKey string
 	HTTP      *http.Client
-	// Wait is the long-poll duration, at most 20 seconds in SQS.
-	Wait time.Duration
-	now  func() time.Time
+	Wait      time.Duration
+	now       func() time.Time
 }
 
 func NewSQSQueue(queueURL, region, accessKey, secretKey string) (*SQSQueue, error) {
@@ -49,10 +44,9 @@ func NewSQSQueue(queueURL, region, accessKey, secretKey string) (*SQSQueue, erro
 		Region:    region,
 		AccessKey: accessKey,
 		SecretKey: secretKey,
-		// Longer than the long poll, or every empty poll would time out.
-		HTTP: &http.Client{Timeout: 40 * time.Second},
-		Wait: 20 * time.Second,
-		now:  time.Now,
+		HTTP:      &http.Client{Timeout: 40 * time.Second},
+		Wait:      20 * time.Second,
+		now:       time.Now,
 	}, nil
 }
 
@@ -99,8 +93,6 @@ func (q *SQSQueue) Delete(ctx context.Context, receiptHandles []string) error {
 			return err
 		}
 		if len(out.Failed) > 0 {
-			// Not fatal: the message comes back after its visibility timeout,
-			// and the feedback it carries is recorded only once.
 			return fmt.Errorf("sqs: %d messages not deleted: %s", len(out.Failed), out.Failed[0].Message)
 		}
 		receiptHandles = receiptHandles[n:]

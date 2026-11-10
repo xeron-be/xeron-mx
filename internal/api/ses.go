@@ -10,8 +10,6 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/store"
 )
 
-// sesUnknown is a domain the manager has not looked at yet: just added, or
-// SES integration only now turned on.
 const sesUnknown = "unknown"
 
 func (s *Server) handleSESStatus(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +103,6 @@ func (s *Server) sesJSON(ctx context.Context, d *store.Domain, row *store.SESIde
 	return out
 }
 
-// deleteSESIdentity returns an error code and HTTP status, or "" once done.
 func (s *Server) deleteSESIdentity(ctx context.Context, r *http.Request, d *store.Domain) (string, int) {
 	if s.ses == nil {
 		return ErrSESDisabled, http.StatusConflict

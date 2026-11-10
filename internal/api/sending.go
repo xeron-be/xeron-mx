@@ -22,7 +22,6 @@ func protectionJSON(m *ses.Monitor) map[string]any {
 	}
 }
 
-// sendingLevel is the one-word state the domain list shows.
 func (s *Server) sendingLevel(ctx context.Context, d *store.Domain) string {
 	if s.sending != nil {
 		w, st, err := s.sending.Window(ctx, d)
@@ -34,8 +33,6 @@ func (s *Server) sendingLevel(ctx context.Context, d *store.Domain) string {
 		}
 		level, _ := ses.Assess(s.sending.Protection(), w)
 		if level == ses.LevelSuspended {
-			// Reached, but the monitor has not acted on it yet: it will on
-			// the next event. Say what is true now.
 			return ses.LevelWarning
 		}
 		return level

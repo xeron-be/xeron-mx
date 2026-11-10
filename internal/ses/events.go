@@ -12,7 +12,6 @@ const (
 	FeedbackComplaint = "complaint"
 )
 
-// Feedback is one recipient's hard bounce or complaint, as SES reported it.
 type Feedback struct {
 	Kind         string
 	Sender       string
@@ -51,16 +50,8 @@ type sesEvent struct {
 	} `json:"complaint"`
 }
 
-// ParseEvent reads one queue message: an SES event, either raw or wrapped in
-// an SNS notification. It returns only what counts against a sender's
-// reputation the way AWS counts it: permanent bounces and complaints. Soft
-// bounces, mail SES refused because the address was already on a suppression
-// list (it was never sent), and anything else yield nothing.
 func ParseEvent(body string) ([]Feedback, error) {
 	if !strings.HasPrefix(strings.TrimSpace(body), "{") {
-		// SES checks a new event destination by publishing a line of plain
-		// text ("Successfully validated SNS topic for Amazon SES event
-		// publishing."): not an event, and not an error either.
 		return nil, nil
 	}
 	var envelope struct {
@@ -73,7 +64,6 @@ func ParseEvent(body string) ([]Feedback, error) {
 	raw := body
 	if envelope.Type != "" {
 		if envelope.Type != "Notification" {
-			// SubscriptionConfirmation and the like: nothing to count.
 			return nil, nil
 		}
 		raw = envelope.Message

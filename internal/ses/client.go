@@ -1,11 +1,3 @@
-// Package ses manages the Amazon SES sending identities of the configured
-// domains, so that mail submitted on port 587 and relayed through SES is only
-// accepted for a domain SES will actually send for.
-//
-// It talks to the SESv2 REST API directly, signed with Signature Version 4,
-// rather than through the AWS SDK: three calls do not justify the dozen modules
-// the SDK brings into a mail relay (CONTRIBUTING.md, "No unnecessary
-// dependencies"). The signature is checked against AWS's published vectors.
 package ses
 
 import (
@@ -21,7 +13,6 @@ import (
 	"time"
 )
 
-// SES verification states, as SESv2 names them.
 const (
 	StatusPending          = "PENDING"
 	StatusSuccess          = "SUCCESS"
@@ -35,7 +26,6 @@ var (
 	ErrAlreadyExists = errors.New("ses: identity already exists")
 )
 
-// Identity is what XeronMX needs to know about an SES email identity.
 type Identity struct {
 	Name               string
 	Status             string
@@ -43,14 +33,12 @@ type Identity struct {
 	DKIMTokens         []string
 }
 
-// Client is the part of SESv2 XeronMX uses. Tests substitute a fake.
 type Client interface {
 	CreateIdentity(ctx context.Context, domain string) (*Identity, error)
 	GetIdentity(ctx context.Context, domain string) (*Identity, error)
 	DeleteIdentity(ctx context.Context, domain string) error
 }
 
-// APIError is an error answered by SES itself, as opposed to a transport one.
 type APIError struct {
 	StatusCode int
 	Code       string
@@ -74,7 +62,6 @@ func (e *APIError) Is(target error) bool {
 	return false
 }
 
-// HTTPClient calls the real SESv2 endpoint of one region.
 type HTTPClient struct {
 	Region    string
 	Endpoint  string
@@ -109,8 +96,6 @@ type identityResponse struct {
 func (r *identityResponse) identity(name string) *Identity {
 	status := r.VerificationStatus
 	if status == "" {
-		// CreateEmailIdentity does not return VerificationStatus; for a domain
-		// identity with Easy DKIM, the DKIM status is what decides it.
 		status = r.DkimAttributes.Status
 	}
 	if r.VerifiedForSendingStatus {
@@ -204,8 +189,6 @@ func parseError(resp *http.Response, raw []byte) error {
 	if e.Message == "" {
 		e.Message = body.Upper
 	}
-	// The error type comes as "NotFoundException:http://internal.amazon.com/..."
-	// in a header, or in the body under one of two names.
 	for _, candidate := range []string{resp.Header.Get("X-Amzn-ErrorType"), body.Type, body.Code} {
 		if candidate == "" {
 			continue

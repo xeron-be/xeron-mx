@@ -15,19 +15,14 @@ import (
 )
 
 var (
-	// ErrNotManaged refuses to delete an identity XeronMX did not create, or
-	// one the domain only inherits from a parent.
 	ErrNotManaged = errors.New("ses: identity not created by XeronMX")
-	// ErrInUse refuses to delete an identity other domains send under.
-	ErrInUse = errors.New("ses: identity covers other domains")
+	ErrInUse      = errors.New("ses: identity covers other domains")
 )
 
 type Notifier interface {
 	Notify(event string, payload map[string]any)
 }
 
-// BounceStatus is whether SES will accept the bounces XeronMX sends from
-// MAILER-DAEMON@<smtp.hostname>, which SES requires instead of the null sender.
 type BounceStatus struct {
 	Sender    string     `json:"sender"`
 	Identity  string     `json:"identity,omitempty"`
@@ -36,9 +31,6 @@ type BounceStatus struct {
 	CheckedAt *time.Time `json:"checked_at,omitempty"`
 }
 
-// Manager keeps one SES identity record per configured domain: it creates the
-// identity when no parent domain already covers it, follows its verification,
-// and is what submission consults before accepting a sender.
 type Manager struct {
 	client   Client
 	db       *store.DB
@@ -48,8 +40,6 @@ type Manager struct {
 	interval time.Duration
 	hostname string
 
-	// mu serialises passes, so the periodic one and a "check now" from the
-	// panel never both decide to create the same identity.
 	mu      sync.Mutex
 	trigger chan struct{}
 
@@ -76,7 +66,6 @@ func NewManager(client Client, db *store.DB, log *slog.Logger, notify Notifier, 
 
 func (m *Manager) Region() string { return m.region }
 
-// Trigger asks for a pass soon, typically after a domain was added.
 func (m *Manager) Trigger() {
 	select {
 	case m.trigger <- struct{}{}:
@@ -124,7 +113,6 @@ func (m *Manager) ReconcileAll(ctx context.Context) error {
 	return nil
 }
 
-// Check runs a pass for one domain now and returns what it recorded.
 func (m *Manager) Check(ctx context.Context, d *store.Domain) (*store.SESIdentity, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -141,8 +129,6 @@ func (m *Manager) BounceSender() BounceStatus {
 	return m.bounce
 }
 
-// Deletable says whether XeronMX may delete the domain's SES identity, and if
-// not, why: only one it created itself, and that no other domain inherits.
 func (m *Manager) Deletable(ctx context.Context, d *store.Domain) (*store.SESIdentity, []string, error) {
 	row, err := m.db.SESIdentityFor(ctx, d.ID)
 	if err != nil {
@@ -161,8 +147,6 @@ func (m *Manager) Deletable(ctx context.Context, d *store.Domain) (*store.SESIde
 	return row, nil, nil
 }
 
-// DeleteIdentity removes the domain's identity from SES. It is only ever
-// called on an explicit request, as part of deleting the domain.
 func (m *Manager) DeleteIdentity(ctx context.Context, d *store.Domain) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -186,8 +170,6 @@ type lookup struct {
 	err error
 }
 
-// lookups caches GetEmailIdentity for one pass, so a hundred subdomains of the
-// same parent cost one call, not a hundred.
 type lookups struct {
 	client Client
 	seen   map[string]lookup
@@ -203,7 +185,6 @@ func (l *lookups) get(ctx context.Context, name string) (*Identity, error) {
 	}
 	id, err := l.client.GetIdentity(ctx, name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		// Do not cache transport errors: the next domain may get through.
 		return nil, err
 	}
 	l.seen[name] = lookup{id, err}
@@ -238,9 +219,6 @@ func (m *Manager) reconcile(ctx context.Context, d *store.Domain, cache *lookups
 	return nil
 }
 
-// resolve decides which identity covers d and in which state it is. It never
-// fails: an SES error is recorded on the row, keeping the last known status so
-// that a passing outage of the SES API does not stop mail that was flowing.
 func (m *Manager) resolve(ctx context.Context, d *store.Domain, row *store.SESIdentity, cache *lookups) *store.SESIdentity {
 	failed := func(err error) *store.SESIdentity {
 		if row != nil {
@@ -257,7 +235,6 @@ func (m *Manager) resolve(ctx context.Context, d *store.Domain, row *store.SESId
 		case err == nil && !(row.Inherited && id.Status == StatusFailed):
 			return fromIdentity(d.ID, id, row.Inherited, row.Managed)
 		case err == nil, errors.Is(err, ErrNotFound):
-			// The parent failed, or the identity is gone from SES: look again.
 		default:
 			return failed(err)
 		}
@@ -281,16 +258,12 @@ func (m *Manager) resolve(ctx context.Context, d *store.Domain, row *store.SESId
 			return failed(err)
 		}
 		if id.Status != StatusFailed {
-			// A verified domain covers all of its subdomains in SES. A pending
-			// one will, once verified: creating a second identity meanwhile would
-			// only mean three more CNAME records to publish for nothing.
 			return fromIdentity(d.ID, id, true, false)
 		}
 	}
 
 	created, err := m.client.CreateIdentity(ctx, d.Name)
 	if errors.Is(err, ErrAlreadyExists) {
-		// Another node, or a person, created it between our lookup and now.
 		got, gerr := m.client.GetIdentity(ctx, d.Name)
 		if gerr != nil {
 			return failed(gerr)
@@ -320,7 +293,6 @@ func fromIdentity(domainID int64, id *Identity, inherited, managed bool) *store.
 	return out
 }
 
-// LocalStatus maps SES's verification state onto XeronMX's three.
 func LocalStatus(id *Identity) string {
 	switch {
 	case id.VerifiedForSending || id.Status == StatusSuccess:
@@ -328,8 +300,6 @@ func LocalStatus(id *Identity) string {
 	case id.Status == StatusFailed:
 		return store.SESFailed
 	default:
-		// PENDING, NOT_STARTED and TEMPORARY_FAILURE (SES could not read the
-		// DNS for now and will try again) all end up verified or failed.
 		return store.SESPending
 	}
 }
@@ -385,8 +355,6 @@ func (m *Manager) checkBounceSender(ctx context.Context, cache *lookups) {
 	m.bounceMu.Unlock()
 }
 
-// parents lists the parent domains of name up to its registrable domain,
-// nearest first: a.b.example.co.uk gives b.example.co.uk, example.co.uk.
 func parents(name string) []string {
 	top, err := publicsuffix.EffectiveTLDPlusOne(name)
 	if err != nil || top == name {

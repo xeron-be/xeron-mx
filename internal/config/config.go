@@ -157,46 +157,27 @@ type OutboundConfig struct {
 	SES SESConfig `yaml:"ses"`
 }
 
-// SESConfig turns on the management of Amazon SES sending identities. It is
-// off unless a region is set, and then nothing about submission changes.
 type SESConfig struct {
 	Region string `yaml:"region"`
 
 	CheckInterval time.Duration `yaml:"check_interval"`
 
-	// Endpoint overrides https://email.<region>.amazonaws.com, for a VPC
-	// endpoint or a local stand-in such as LocalStack.
 	Endpoint string `yaml:"endpoint"`
 
-	// ConfigurationSet is added to every message relayed through SES (the
-	// X-SES-CONFIGURATION-SET header), so that SES publishes its bounces and
-	// complaints whatever identity sent it.
 	ConfigurationSet string `yaml:"configuration_set"`
 
-	// EventsQueueURL is the SQS queue those events land in. With it, XeronMX
-	// counts each domain's hard bounces and complaints and suspends its
-	// sending before it can put the whole SES account at risk.
 	EventsQueueURL string `yaml:"events_queue_url"`
 
 	Protection SendingProtection `yaml:"protection"`
 
-	// The IAM keys are read from the environment only, never from the YAML
-	// file: that file is exported, synced between nodes and pasted into
-	// tickets, and an AWS key in it would travel with it.
 	AccessKeyID     string `yaml:"-"`
 	SecretAccessKey string `yaml:"-"`
 }
 
 func (s SESConfig) Enabled() bool { return s.Region != "" }
 
-// ReputationEnabled is whether bounces and complaints are read back from SES.
 func (s SESConfig) ReputationEnabled() bool { return s.Enabled() && s.EventsQueueURL != "" }
 
-// SendingProtection holds the per-domain limits, over a sliding window. A rate
-// alone would be meaningless at low volume (one mistyped address out of ten
-// mails is 10 %), so a bounce limit also needs a minimum number of bounces.
-// Complaints are counted, not rated: AWS reviews an account from 0.1 %, which
-// a single complaint exceeds below a thousand mails.
 type SendingProtection struct {
 	Window time.Duration `yaml:"window"`
 

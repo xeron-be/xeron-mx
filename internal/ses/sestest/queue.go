@@ -10,7 +10,6 @@ import (
 	"github.com/xeron-be/xeron-mx/internal/ses"
 )
 
-// Queue is an in-memory stand-in for the SQS events queue.
 type Queue struct {
 	mu      sync.Mutex
 	pending []ses.QueueMessage
@@ -49,8 +48,6 @@ func (q *Queue) Delete(_ context.Context, handles []string) error {
 	return nil
 }
 
-// Bounce is an SES configuration-set event for a permanent bounce, the way it
-// lands in SQS through SNS with raw message delivery.
 func Bounce(sender, recipient, feedbackID string) string {
 	return event(map[string]any{
 		"eventType": "Bounce",
@@ -77,8 +74,6 @@ func Complaint(sender, recipient, feedbackID string) string {
 	})
 }
 
-// now dates events in the present, so they stay inside the window whatever day
-// the tests run.
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
 func event(v any) string {

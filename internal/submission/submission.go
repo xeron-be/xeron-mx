@@ -499,10 +499,6 @@ func sendLimitError() *smtp.SMTPError {
 	}
 }
 
-// suspensionGate refuses a domain whose sending was suspended, automatically
-// for its bounces or complaints, or by hand. The refusal is final (5xx): the
-// suspension lasts until an admin lifts it, and the sender is better told at
-// once than by a bounce after days of retries.
 func (s *Server) suspensionGate(ctx context.Context, d *store.Domain) error {
 	st, err := s.db.SendingStateFor(ctx, d.ID)
 	if err != nil {
@@ -519,14 +515,6 @@ func (s *Server) suspensionGate(ctx context.Context, d *store.Domain) error {
 	return &smtp.SMTPError{Code: 550, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: msg}
 }
 
-// sesGate refuses a sender domain that Amazon SES would refuse anyway, so the
-// sending server hears it at MAIL FROM rather than through a bounce from the
-// relay hours later. A domain still being verified gets a 4xx: the sending
-// server keeps the message and tries again, and it leaves once SES agrees.
-// Only a verification SES has given up on is final.
-//
-// Bounces are not affected: XeronMX writes them itself and hands them to the
-// relay directly, never through this listener.
 func (s *Server) sesGate(ctx context.Context, d *store.Domain) error {
 	row, err := s.db.SESIdentityFor(ctx, d.ID)
 	if errors.Is(err, store.ErrNotFound) {

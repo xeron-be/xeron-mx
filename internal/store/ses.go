@@ -8,25 +8,17 @@ import (
 	"time"
 )
 
-// What XeronMX makes of a domain's Amazon SES identity. Only SESVerified lets
-// submission through; SESFailed is refused for good, the rest for now.
 const (
 	SESPending  = "pending"
 	SESVerified = "verified"
 	SESFailed   = "failed"
-	// SESError means no identity could be found or created yet, because SES
-	// itself could not be reached or refused the call.
-	SESError = "error"
+	SESError    = "error"
 )
 
 type SESIdentity struct {
-	DomainID int64
-	// Identity is the SES identity that covers the domain: the domain itself,
-	// or a parent domain when Inherited.
-	Identity  string
-	Inherited bool
-	// Managed is set when XeronMX created the identity, and so may delete it.
-	// One found already in SES (created by hand) is used but never deleted.
+	DomainID   int64
+	Identity   string
+	Inherited  bool
 	Managed    bool
 	Status     string
 	DKIMTokens []string
@@ -101,8 +93,6 @@ func (db *DB) ListSESIdentities(ctx context.Context) ([]*SESIdentity, error) {
 	return out, rows.Err()
 }
 
-// SESDependents lists the other domains that send under identity, inheriting
-// it as a parent domain: deleting it would leave each of them unverified.
 func (db *DB) SESDependents(ctx context.Context, identity string, except int64) ([]string, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT d.name FROM ses_identities s JOIN domains d ON d.id = s.domain_id

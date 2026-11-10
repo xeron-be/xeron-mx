@@ -277,8 +277,6 @@ function DomainCard({
                 : t("domains.deleteConfirm", { name: domain.name });
         if (!confirm(warning)) return;
 
-        // Removing the SES identity is a separate, explicit choice, offered only
-        // when XeronMX created it and no other domain sends under it.
         let deleteSes = false;
         if (domain.ses_status && domain.ses_status !== "unknown") {
             try {
@@ -287,7 +285,6 @@ function DomainCard({
                     deleteSes = confirm(t("domains.sesDeleteAlso", { identity: ses.identity }));
                 }
             } catch {
-                // Not knowing is not a reason to block the deletion: the identity is kept.
             }
         }
 

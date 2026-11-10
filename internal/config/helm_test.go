@@ -26,8 +26,6 @@ func TestHelmChartRendersLoadableConfig(t *testing.T) {
 	}
 
 	t.Setenv("XERONMX_CLUSTER_SECRET", "a shared secret of sixteen plus")
-	// In a real install these come from existingSecret, which the chart never
-	// renders, so the test supplies them the way the pod's environment would.
 	t.Setenv("XERONMX_SES_ACCESS_KEY_ID", "AKIDTEST")
 	t.Setenv("XERONMX_SES_SECRET_ACCESS_KEY", "test")
 
