@@ -449,3 +449,27 @@ func TestFirstFailedProbeIsReported(t *testing.T) {
 		t.Fatal("a repeated failure was reported again; alerting would repeat on every probe")
 	}
 }
+
+func TestStoredEncodedSubjectIsDecodedOnRead(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	domainID := newDomain(t, db, "example.com")
+
+	now := time.Now().UTC()
+	if err := db.Enqueue(ctx, &Message{
+		ID: "encoded", DomainID: domainID,
+		EnvelopeFrom: "sender@example.net",
+		EnvelopeTo:   []string{"someone@example.com"},
+		Subject:      "=?utf-8?b?UsOpcG9uc2Ugw6A=?= votre ticket",
+		SizeBytes:    10, ReceivedAt: now, ExpiresAt: now.Add(time.Hour), NextRetryAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := db.GetMessage(ctx, "encoded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Réponse à votre ticket"; m.Subject != want {
+		t.Fatalf("subject = %q, want %q", m.Subject, want)
+	}
+}

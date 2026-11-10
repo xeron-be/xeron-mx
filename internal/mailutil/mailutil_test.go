@@ -1,6 +1,7 @@
 package mailutil
 
 import (
+	"encoding/base64"
 	"io"
 	"strings"
 	"testing"
@@ -70,7 +71,14 @@ func TestExtractSubject(t *testing.T) {
 		{"fold stops at the body", "Subject: last header\r\n\r\n indented body line\r\n", "last header"},
 		{"not a prefix match", "Subject-Extra: nope\r\nSubject: yes\r\n\r\n", "yes"},
 		{"first one wins", "Subject: one\r\nSubject: two\r\n\r\n", "one"},
-		{"encoded word kept as is", "Subject: =?UTF-8?B?w6ljaGVj?=\r\n\r\n", "=?UTF-8?B?w6ljaGVj?="},
+		{"encoded word", "Subject: =?UTF-8?B?w6ljaGVj?=\r\n\r\n", "échec"},
+		{"encoded words mixed with plain text", "Subject: =?utf-8?b?UsOpcG9uc2Ugw6A=?= votre ticket TEC-2026-0002 - =?utf-8?b?UHJvYmzDqG1l?= serveur mails\r\n\r\n", "Réponse à votre ticket TEC-2026-0002 - Problème serveur mails"},
+		{"quoted printable", "Subject: =?ISO-8859-1?Q?caf=E9_cr=E8me?=\r\n\r\n", "café crème"},
+		{"folded encoded words", "Subject: =?UTF-8?B?UsOpcG9uc2U=?=\r\n =?UTF-8?B?IMOg?= vous\r\n\r\n", "Réponse à vous"},
+		{"windows-1252", "Subject: =?windows-1252?Q?=93quoted=94?=\r\n\r\n", "\u201cquoted\u201d"},
+		{"unknown charset kept as is", "Subject: =?x-unknown?B?YWJj?=\r\n\r\n", "=?x-unknown?B?YWJj?="},
+		{"malformed word kept as is", "Subject: =?UTF-8?B?!!!?=\r\n\r\n", "=?UTF-8?B?!!!?="},
+		{"encoded line breaks flattened", "Subject: =?UTF-8?B?YQ0KYg==?=\r\n\r\n", "a  b"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -90,6 +98,10 @@ func TestExtractSubjectIsBoundedAndValidUTF8(t *testing.T) {
 	accented := "Subject: " + strings.Repeat("é", 400) + "\r\n\r\n"
 	if got := ExtractSubject([]byte(accented)); !utf8.ValidString(got) {
 		t.Fatal("subject cut inside a multibyte character is not valid UTF-8")
+	}
+	encoded := "Subject: =?UTF-8?B?" + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("é", 400))) + "?=\r\n\r\n"
+	if got := ExtractSubject([]byte(encoded)); !utf8.ValidString(got) || len(got) != 500 || got != strings.Repeat("é", 250) {
+		t.Fatalf("decoded subject is %d bytes; want 250 whole characters", len(got))
 	}
 	latin1 := "Subject: caf\xe9\r\n\r\n"
 	if got := ExtractSubject([]byte(latin1)); got != "caf" {
