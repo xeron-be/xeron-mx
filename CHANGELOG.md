@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The licence is now the PolyForm Noncommercial License 1.0.0 instead of the
+  AGPL-3.0. XeronMX may still be run, studied, modified and shared for any
+  noncommercial purpose; commercial use (selling it, offering it as a hosted
+  service, running it for a business) needs a separate licence from the author.
+  Releases up to and including 1.0.0 stay available under the AGPL-3.0
+
 ### Fixed
 
 - The timeline no longer labels outbound mail "delivered to the primary": a

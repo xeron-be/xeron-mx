@@ -6,7 +6,7 @@
 
 *A resilient backup MX appliance with real-time visibility, encrypted spool, and full operational control.*
 
-[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![Built with](https://img.shields.io/badge/built%20with-Go-00add8.svg)](https://go.dev)
 [![Release](https://img.shields.io/badge/release-v1.0.0-green.svg)](https://github.com/xeron-be/xeron-mx/releases)
 
@@ -387,4 +387,8 @@ make check
 
 ## Licence
 
-Licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE). You are free to run, study, modify, and self-host XeronMX. If you provide modifications as a network service, source code must be made available under the same license terms.
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). The source is public, but XeronMX is not open source in the OSI sense: it may be run, studied, modified and shared for noncommercial purposes only. That covers personal use, hobby projects and testing, and use by charities, schools, public research, public safety or health organisations and government institutions.
+
+Any commercial use needs a separate licence from the author, whether that is selling XeronMX, offering it as a paid or hosted service, or running it for a business. Ask through [xeron.be](https://xeron.be).
+
+Releases up to and including 1.0.0 were published under the GNU Affero General Public License v3.0, and those releases remain available under its terms.
