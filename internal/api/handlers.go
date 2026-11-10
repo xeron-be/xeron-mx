@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"strings"
 	"time"
@@ -890,6 +891,18 @@ func (s *Server) handleRawMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	u := userFrom(r)
 
+	body, err := s.blobs.Get(m.ID)
+	if errors.Is(err, fs.ErrNotExist) {
+		s.fail(w, r, http.StatusGone, ErrSpoolReadFailed)
+		return
+	}
+	if err != nil {
+		s.log.Error("raw read failed", "id", m.ID, "error", err)
+		s.fail(w, r, http.StatusInternalServerError, ErrSpoolReadFailed)
+		return
+	}
+	defer body.Close()
+
 	if err := s.audit(r.Context(), r, &store.Event{
 		Type: store.EventAdminRead, QueueID: &m.ID, DomainID: &m.DomainID, UserID: &u.ID,
 		Data: map[string]any{"ip": clientIP(r), "from": m.EnvelopeFrom, "to": m.EnvelopeTo},
@@ -899,13 +912,6 @@ func (s *Server) handleRawMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Warn("admin read a spooled message", "id", m.ID, "admin", u.Email, "ip", clientIP(r))
-
-	body, err := s.blobs.Get(m.ID)
-	if err != nil {
-		s.fail(w, r, http.StatusNotFound, ErrSpoolReadFailed)
-		return
-	}
-	defer body.Close()
 
 	w.Header().Set("Content-Type", "message/rfc822")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", m.ID+".eml"))

@@ -284,6 +284,7 @@ export const de: Catalog = {
     "queue.delete": "Löschen",
     "queue.downloadRaw": "Rohnachricht herunterladen",
     "queue.downloadNote": "Das ist die E-Mail einer anderen Person. Jeder Download wird im Prüfprotokoll vermerkt.",
+    "queue.rawGone": "Die Rohnachricht ist nicht mehr verfügbar: Ihr Inhalt wird aus dem Spool entfernt, sobald die Nachricht zugestellt, abgewiesen oder abgelaufen ist.",
 
     "sending.title": "Versand",
     "sending.subtitle":

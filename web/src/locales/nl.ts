@@ -284,6 +284,7 @@ export const nl: Catalog = {
     "queue.delete": "Verwijderen",
     "queue.downloadRaw": "Ruw bericht downloaden",
     "queue.downloadNote": "Dit is iemand anders zijn e-mail. Elke download wordt vastgelegd in het auditspoor.",
+    "queue.rawGone": "Het ruwe bericht is niet meer beschikbaar: de inhoud wordt uit de spool verwijderd zodra het bericht is afgeleverd, geweigerd of verlopen.",
 
     "sending.title": "Verzenden",
     "sending.subtitle":

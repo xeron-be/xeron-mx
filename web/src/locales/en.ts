@@ -281,6 +281,7 @@ export const en = {
     "queue.delete": "Delete",
     "queue.downloadRaw": "Download the raw message",
     "queue.downloadNote": "This is someone else's email. Every download is written to the audit trail.",
+    "queue.rawGone": "The raw message is no longer available: its body is removed from the spool once the message is delivered, bounced or expired.",
 
     "sending.title": "Sending",
     "sending.subtitle":

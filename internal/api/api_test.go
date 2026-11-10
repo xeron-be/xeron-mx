@@ -882,3 +882,35 @@ func TestTestingAPrivatePrimaryExplainsTheRefusal(t *testing.T) {
 		t.Fatalf("the test opened %d connection(s) to the private primary", n)
 	}
 }
+
+func TestRawOfARemovedBodyIsGoneAndNotAudited(t *testing.T) {
+	a := newTestAPI(t)
+	cookie := a.setup(t)
+	ctx := context.Background()
+
+	rec := a.do(t, "POST", "/api/v1/domains", map[string]any{
+		"name": "example.com", "primary_host": "mail.example.com",
+	}, cookie)
+	domainID := int64(decodeBody(t, rec)["id"].(float64))
+
+	now := timeNow()
+	if err := a.db.Enqueue(ctx, &store.Message{
+		ID: "delivered1", DomainID: domainID,
+		EnvelopeFrom: "a@b.example", EnvelopeTo: []string{"c@example.com"},
+		Subject: "hello", SizeBytes: 10,
+		ReceivedAt: now, ExpiresAt: now.Add(time.Hour), NextRetryAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = a.do(t, "GET", "/api/v1/queue/delivered1/raw", nil, cookie)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("raw of a removed body returned %d, want 410", rec.Code)
+	}
+	events, _ := a.db.ListEvents(ctx, 1000)
+	for _, e := range events {
+		if e.Type == store.EventAdminRead {
+			t.Fatal("a read that returned nothing was written to the audit trail")
+		}
+	}
+}
