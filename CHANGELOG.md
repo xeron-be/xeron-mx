@@ -18,6 +18,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Mail relayed through Amazon SES is no longer signed by XeronMX: SES signs it
+  with Easy DKIM, and refuses a message carrying two `DKIM-Signature` headers
+  (`554 Transaction failed: Duplicate header 'DKIM-Signature'`), which is what
+  it received when the submitting server had already signed. Other relays and
+  direct delivery are still signed
 - The timeline no longer labels outbound mail "delivered to the primary": a
   delivery of submitted mail records `direction: outbound` and shows as sent to
   the recipient, and every delivery event lists its recipients. The details

@@ -21,15 +21,19 @@ import (
 )
 
 func (s *Sender) sendOutbound(ctx context.Context, m *store.Message, body io.Reader) (recipients, error) {
-	body, err := s.signed(ctx, m, body)
-	if err != nil {
-		return recipients{}, err
-	}
-
 	mode, route := s.routeFor(ctx, m)
 	if !s.outbound.Enabled {
 		mode, route = "direct", nil
 	}
+
+	if !s.relaysThroughSES(mode, route) {
+		signed, err := s.signed(ctx, m, body)
+		if err != nil {
+			return recipients{}, err
+		}
+		body = signed
+	}
+
 	switch mode {
 	case "relay":
 		return s.sendViaRelay(ctx, m, body, route)
@@ -73,6 +77,10 @@ func (s *Sender) signed(ctx context.Context, m *store.Message, body io.Reader) (
 	}
 	s.log.Debug("message signed", "domain", d.Name, "selector", key.Selector)
 	return &out, nil
+}
+
+func (s *Sender) relaysThroughSES(mode string, route *store.Route) bool {
+	return mode == "relay" && (route == nil || route.RelayHost == "") && s.outbound.SES.Enabled()
 }
 
 func (s *Sender) routeFor(ctx context.Context, m *store.Message) (string, *store.Route) {
