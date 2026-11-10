@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-10
+
 ### Changed
 
 - The licence is now the PolyForm Noncommercial License 1.0.0 instead of the
@@ -724,5 +726,6 @@ otherwise take for an accident.
   the load balancer's address for every sender; configure the PROXY protocol
   (`smtp.proxyProtocolTrusted`) with such a balancer
 
-[Unreleased]: https://github.com/xeron-be/xeron-mx/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/xeron-be/xeron-mx/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/xeron-be/xeron-mx/releases/tag/v1.1.0
 [1.0.0]: https://github.com/xeron-be/xeron-mx/releases/tag/v1.0.0

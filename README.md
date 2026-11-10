@@ -8,7 +8,7 @@
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![Built with](https://img.shields.io/badge/built%20with-Go-00add8.svg)](https://go.dev)
-[![Release](https://img.shields.io/badge/release-v1.0.0-green.svg)](https://github.com/xeron-be/xeron-mx/releases)
+[![Release](https://img.shields.io/badge/release-v1.1.0-green.svg)](https://github.com/xeron-be/xeron-mx/releases)
 
 </div>
 
