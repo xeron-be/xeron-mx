@@ -149,7 +149,10 @@ func run() error {
 	node.SetConfigSource(apiSrv)
 	apiSrv.SetCluster(node)
 
-	var sesMgr *ses.Manager
+	var (
+		sesMgr     *ses.Manager
+		reputation *ses.Monitor
+	)
 	if sc := cfg.Outbound.SES; sc.Enabled() {
 		client := ses.NewHTTPClient(sc.Region, sc.AccessKeyID, sc.SecretAccessKey)
 		if sc.Endpoint != "" {
@@ -158,6 +161,18 @@ func run() error {
 		sesMgr = ses.NewManager(client, db, log.With("component", "ses"), notifier,
 			sc.Region, sc.CheckInterval, mailutil.Hostname(cfg.SMTP.Hostname))
 		apiSrv.SetSES(sesMgr)
+		if sc.ReputationEnabled() {
+			queue, err := ses.NewSQSQueue(sc.EventsQueueURL, sc.Region, sc.AccessKeyID, sc.SecretAccessKey)
+			if err != nil {
+				return err
+			}
+			reputation = ses.NewMonitor(queue, sc.EventsQueueURL, db, log.With("component", "ses-events"),
+				notifier, sc.Protection)
+			apiSrv.SetReputation(reputation)
+			log.Info("sending protection enabled", "configuration_set", sc.ConfigurationSet,
+				"window", sc.Protection.Window, "suspend_bounce_percent", sc.Protection.SuspendBouncePercent,
+				"suspend_complaints", sc.Protection.SuspendComplaints)
+		}
 		log.Info("amazon ses identity management enabled", "region", sc.Region,
 			"endpoint", client.Endpoint, "check_interval", sc.CheckInterval)
 	}
@@ -314,6 +329,13 @@ func run() error {
 		go func() {
 			defer wg.Done()
 			sesMgr.Run(ctx)
+		}()
+	}
+	if reputation != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reputation.Run(ctx)
 		}()
 	}
 

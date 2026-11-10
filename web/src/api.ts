@@ -176,6 +176,44 @@ export interface Domain {
     pending?: number;
     recipients_count?: number;
     ses_status?: SESStatus;
+    sending_level?: SendingLevel;
+}
+
+export type SendingLevel = "ok" | "warning" | "suspended";
+
+export interface SendingLimits {
+    window_hours: number;
+    warn_bounce_percent: number;
+    warn_min_bounces: number;
+    suspend_bounce_percent: number;
+    suspend_min_bounces: number;
+    warn_complaints: number;
+    suspend_complaints: number;
+}
+
+export interface SendingFeedback {
+    kind: "bounce" | "complaint";
+    sender: string;
+    recipient: string;
+    detail: string;
+    occurred_at: string;
+}
+
+export interface SendingInfo {
+    domain: string;
+    monitored: boolean;
+    suspended: boolean;
+    suspended_at?: string | null;
+    suspended_reason?: string;
+    suspended_by?: string;
+    level: SendingLevel;
+    since?: string;
+    sent?: number;
+    bounces?: number;
+    complaints?: number;
+    bounce_percent?: number;
+    limits?: SendingLimits;
+    feedback?: SendingFeedback[];
 }
 
 export type SESStatus = "unknown" | "pending" | "verified" | "failed" | "error";
@@ -211,6 +249,13 @@ export interface SESOverview {
         error?: string;
         checked_at?: string | null;
     };
+    events?: {
+        queue_url: string;
+        last_poll_at?: string | null;
+        last_error?: string;
+        recorded: number;
+    };
+    protection?: SendingLimits;
 }
 
 export interface DKIMInfo {
@@ -469,6 +514,9 @@ export const api = {
     sesOverview: () => request<SESOverview>("/ses"),
     getSES: (id: number) => request<SESInfo>(`/domains/${id}/ses`),
     checkSES: (id: number) => post<SESInfo>(`/domains/${id}/ses/check`),
+    getSending: (id: number) => request<SendingInfo>(`/domains/${id}/sending`),
+    suspendSending: (id: number) => post<SendingInfo>(`/domains/${id}/sending/suspend`),
+    resumeSending: (id: number) => post<SendingInfo>(`/domains/${id}/sending/resume`),
     testDomain: (id: number) => post<ProbeResult>(`/domains/${id}/test`),
     domainDns: (id: number) => request<DnsGuide>(`/domains/${id}/dns`),
     getDKIM: (id: number) => request<DKIMInfo>(`/domains/${id}/dkim`),

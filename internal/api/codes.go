@@ -135,4 +135,8 @@ const (
 	ErrSESIdentityNotManaged     = "ses_identity_not_managed"
 	ErrSESIdentityInUse          = "ses_identity_in_use"
 	ErrSESDeleteFailed           = "ses_delete_failed"
+	ErrSendingReadFailed         = "sending_read_failed"
+	ErrSendingUpdateFailed       = "sending_update_failed"
+	ErrSendingAlreadySuspended   = "sending_already_suspended"
+	ErrSendingNotSuspended       = "sending_not_suspended"
 )

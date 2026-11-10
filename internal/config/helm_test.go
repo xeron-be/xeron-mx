@@ -72,8 +72,11 @@ func TestHelmChartRendersLoadableConfig(t *testing.T) {
 			"--set", "submission.relayHost=email-smtp.eu-west-3.amazonaws.com",
 			"--set", "submission.requireTLS=false",
 			"--set", "submission.ses.region=eu-west-3",
+			"--set", "submission.ses.configurationSet=xeronmx",
+			"--set", "submission.ses.eventsQueueURL=https://sqs.eu-west-3.amazonaws.com/1/xeronmx-ses-events",
 		}, func(t *testing.T, c *Config) {
-			if c.Outbound.SES.Region != "eu-west-3" || c.Outbound.SES.CheckInterval.String() != "15m0s" {
+			if c.Outbound.SES.Region != "eu-west-3" || c.Outbound.SES.CheckInterval.String() != "15m0s" ||
+				!c.Outbound.SES.ReputationEnabled() || c.Outbound.SES.Protection.SuspendComplaints != 2 {
 				t.Fatalf("ses = %+v", c.Outbound.SES)
 			}
 		}},

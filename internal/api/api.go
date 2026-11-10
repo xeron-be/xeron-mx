@@ -63,6 +63,7 @@ type Server struct {
 	clamav    *clamav.Scanner
 	spam      *spam.Checker
 	ses       *ses.Manager
+	sending   *ses.Monitor
 
 	srv *http.Server
 }
@@ -121,6 +122,7 @@ func (s *Server) SetDNSBL(d *dnsbl.Checker)         { s.dnsbl = d }
 func (s *Server) SetClamAV(c *clamav.Scanner)       { s.clamav = c }
 func (s *Server) SetSpam(sp *spam.Checker)          { s.spam = sp }
 func (s *Server) SetSES(m *ses.Manager)             { s.ses = m }
+func (s *Server) SetReputation(m *ses.Monitor)      { s.sending = m }
 
 func (s *Server) Hub() *Hub             { return s.hub }
 func (s *Server) Handler() http.Handler { return s.srv.Handler }
@@ -174,6 +176,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/ses", s.fleetWide(s.handleSESStatus))
 	mux.HandleFunc("GET /api/v1/domains/{id}/ses", s.authed(s.handleGetSES))
 	mux.HandleFunc("POST /api/v1/domains/{id}/ses/check", s.operator(s.handleCheckSES))
+
+	mux.HandleFunc("GET /api/v1/domains/{id}/sending", s.authed(s.handleGetSending))
+	mux.HandleFunc("POST /api/v1/domains/{id}/sending/suspend", s.admin(s.handleSuspendSending))
+	mux.HandleFunc("POST /api/v1/domains/{id}/sending/resume", s.admin(s.handleResumeSending))
 
 	mux.HandleFunc("GET /api/v1/domains/{id}/dmarc", s.authed(s.handleGetDMARC))
 	mux.HandleFunc("POST /api/v1/domains/{id}/dmarc/check", s.authed(s.handleCheckDMARC))

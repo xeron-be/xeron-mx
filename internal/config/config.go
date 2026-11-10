@@ -168,6 +168,18 @@ type SESConfig struct {
 	// endpoint or a local stand-in such as LocalStack.
 	Endpoint string `yaml:"endpoint"`
 
+	// ConfigurationSet is added to every message relayed through SES (the
+	// X-SES-CONFIGURATION-SET header), so that SES publishes its bounces and
+	// complaints whatever identity sent it.
+	ConfigurationSet string `yaml:"configuration_set"`
+
+	// EventsQueueURL is the SQS queue those events land in. With it, XeronMX
+	// counts each domain's hard bounces and complaints and suspends its
+	// sending before it can put the whole SES account at risk.
+	EventsQueueURL string `yaml:"events_queue_url"`
+
+	Protection SendingProtection `yaml:"protection"`
+
 	// The IAM keys are read from the environment only, never from the YAML
 	// file: that file is exported, synced between nodes and pasted into
 	// tickets, and an AWS key in it would travel with it.
@@ -177,7 +189,44 @@ type SESConfig struct {
 
 func (s SESConfig) Enabled() bool { return s.Region != "" }
 
-var sesRegion = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
+// ReputationEnabled is whether bounces and complaints are read back from SES.
+func (s SESConfig) ReputationEnabled() bool { return s.Enabled() && s.EventsQueueURL != "" }
+
+// SendingProtection holds the per-domain limits, over a sliding window. A rate
+// alone would be meaningless at low volume (one mistyped address out of ten
+// mails is 10 %), so a bounce limit also needs a minimum number of bounces.
+// Complaints are counted, not rated: AWS reviews an account from 0.1 %, which
+// a single complaint exceeds below a thousand mails.
+type SendingProtection struct {
+	Window time.Duration `yaml:"window"`
+
+	WarnBouncePercent    float64 `yaml:"warn_bounce_percent"`
+	WarnMinBounces       int     `yaml:"warn_min_bounces"`
+	SuspendBouncePercent float64 `yaml:"suspend_bounce_percent"`
+	SuspendMinBounces    int     `yaml:"suspend_min_bounces"`
+
+	WarnComplaints    int `yaml:"warn_complaints"`
+	SuspendComplaints int `yaml:"suspend_complaints"`
+}
+
+var (
+	sesRegion    = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
+	sesConfigSet = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+)
+
+func (p SendingProtection) validate() error {
+	switch {
+	case p.Window < time.Hour:
+		return fmt.Errorf("window must be at least 1h")
+	case p.WarnBouncePercent <= 0 || p.SuspendBouncePercent < p.WarnBouncePercent || p.SuspendBouncePercent > 100:
+		return fmt.Errorf("bounce percentages must satisfy 0 < warn_bounce_percent <= suspend_bounce_percent <= 100")
+	case p.WarnMinBounces < 1 || p.SuspendMinBounces < p.WarnMinBounces:
+		return fmt.Errorf("bounce minimums must satisfy 1 <= warn_min_bounces <= suspend_min_bounces")
+	case p.WarnComplaints < 1 || p.SuspendComplaints < p.WarnComplaints:
+		return fmt.Errorf("complaint counts must satisfy 1 <= warn_complaints <= suspend_complaints")
+	}
+	return nil
+}
 
 type AlertConfig struct {
 	Enabled          bool             `yaml:"enabled"`
@@ -368,7 +417,18 @@ func Default() Config {
 			MaxMessageBytes: 50 << 20,
 			MaxConnections:  100,
 			RequireTLS:      true,
-			SES:             SESConfig{CheckInterval: 15 * time.Minute},
+			SES: SESConfig{
+				CheckInterval: 15 * time.Minute,
+				Protection: SendingProtection{
+					Window:               7 * 24 * time.Hour,
+					WarnBouncePercent:    3,
+					WarnMinBounces:       3,
+					SuspendBouncePercent: 5,
+					SuspendMinBounces:    5,
+					WarnComplaints:       1,
+					SuspendComplaints:    2,
+				},
+			},
 		},
 		Alerts: AlertConfig{
 			PrimaryDownAfter: 5 * time.Minute,
@@ -515,6 +575,8 @@ func applyEnv(cfg *Config) {
 	str("XERONMX_OUTBOUND_SES_REGION", &cfg.Outbound.SES.Region)
 	dur("XERONMX_OUTBOUND_SES_CHECK_INTERVAL", &cfg.Outbound.SES.CheckInterval)
 	str("XERONMX_OUTBOUND_SES_ENDPOINT", &cfg.Outbound.SES.Endpoint)
+	str("XERONMX_OUTBOUND_SES_CONFIGURATION_SET", &cfg.Outbound.SES.ConfigurationSet)
+	str("XERONMX_OUTBOUND_SES_EVENTS_QUEUE_URL", &cfg.Outbound.SES.EventsQueueURL)
 	str("XERONMX_SES_ACCESS_KEY_ID", &cfg.Outbound.SES.AccessKeyID)
 	str("XERONMX_SES_SECRET_ACCESS_KEY", &cfg.Outbound.SES.SecretAccessKey)
 	if v, ok := os.LookupEnv("XERONMX_OUTBOUND_RELAY_PORT"); ok {
@@ -817,6 +879,22 @@ func (c *Config) Validate() error {
 			u, err := url.Parse(ses.Endpoint)
 			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 				return fmt.Errorf("outbound.ses.endpoint must be an http(s) URL, got %q", ses.Endpoint)
+			}
+		}
+		if ses.ConfigurationSet != "" && !sesConfigSet.MatchString(ses.ConfigurationSet) {
+			return fmt.Errorf("outbound.ses.configuration_set %q is not a valid SES configuration set name", ses.ConfigurationSet)
+		}
+		if ses.EventsQueueURL != "" {
+			u, err := url.Parse(ses.EventsQueueURL)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || len(u.Path) < 2 {
+				return fmt.Errorf("outbound.ses.events_queue_url must be the URL of an SQS queue, got %q", ses.EventsQueueURL)
+			}
+			if ses.ConfigurationSet == "" {
+				return fmt.Errorf("outbound.ses.events_queue_url needs outbound.ses.configuration_set: " +
+					"without it SES publishes no events for the mail XeronMX relays")
+			}
+			if err := ses.Protection.validate(); err != nil {
+				return fmt.Errorf("outbound.ses.protection: %w", err)
 			}
 		}
 	}

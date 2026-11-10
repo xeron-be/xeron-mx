@@ -120,6 +120,28 @@ func (a *Alerter) Notify(event string, payload map[string]any) {
 				"delete and re-add the domain, or recreate the identity in SES.", identity, domain),
 			Data: payload,
 		})
+	case store.EventSendingSuspended:
+		domain, _ := payload["domain"].(string)
+		a.emit(Alert{
+			Key:      "sending_suspended:" + domain,
+			Severity: SeverityCritical,
+			Title:    fmt.Sprintf("Sending from %s was suspended", domain),
+			Detail: fmt.Sprintf("%s reached the suspension limit for hard bounces or complaints in Amazon SES, "+
+				"which reviews and can pause the whole account, every domain included. Its submissions are "+
+				"now refused with 550; mail already queued still leaves. Find out what it sent (the panel "+
+				"lists the addresses), then lift the suspension from the domain's Sending reputation section.", domain),
+			Data: payload,
+		})
+	case store.EventSendingWarning:
+		domain, _ := payload["domain"].(string)
+		a.emit(Alert{
+			Key:      "sending_warning:" + domain,
+			Severity: SeverityWarning,
+			Title:    fmt.Sprintf("%s is collecting bounces or complaints", domain),
+			Detail: fmt.Sprintf("%s reached the warning limit for hard bounces or complaints in Amazon SES. "+
+				"Nothing is blocked yet; at the suspension limit its sending stops on its own.", domain),
+			Data: payload,
+		})
 	case store.EventMailExpired:
 		a.emit(Alert{
 			Key:      "mail_expired",

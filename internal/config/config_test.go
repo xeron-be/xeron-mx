@@ -356,3 +356,47 @@ func TestSESKeysComeFromTheEnvironmentOnly(t *testing.T) {
 		t.Fatalf("ses = %+v", c.Outbound.SES)
 	}
 }
+
+func TestSendingProtectionValidation(t *testing.T) {
+	ok := func(c *Config) {
+		c.Outbound.Enabled = true
+		c.Outbound.RelayHost = "email-smtp.eu-west-3.amazonaws.com"
+		c.Outbound.SES.Region = "eu-west-3"
+		c.Outbound.SES.AccessKeyID = "AKIDTEST"
+		c.Outbound.SES.SecretAccessKey = "secret"
+		c.Outbound.SES.ConfigurationSet = "xeronmx"
+		c.Outbound.SES.EventsQueueURL = "https://sqs.eu-west-3.amazonaws.com/353243624583/xeronmx-ses-events"
+	}
+	cases := []struct {
+		name  string
+		mutfn func(*Config)
+		want  string
+	}{
+		{"valid", func(c *Config) {}, ""},
+		{"queue without a configuration set", func(c *Config) { c.Outbound.SES.ConfigurationSet = "" }, "configuration_set"},
+		{"bad configuration set", func(c *Config) { c.Outbound.SES.ConfigurationSet = "x y" }, "configuration set"},
+		{"bad queue", func(c *Config) { c.Outbound.SES.EventsQueueURL = "xeronmx-ses-events" }, "events_queue_url"},
+		{"warn above suspend", func(c *Config) { c.Outbound.SES.Protection.WarnBouncePercent = 9 }, "bounce percentages"},
+		{"no minimum", func(c *Config) { c.Outbound.SES.Protection.WarnMinBounces = 0 }, "bounce minimums"},
+		{"complaints reversed", func(c *Config) { c.Outbound.SES.Protection.SuspendComplaints = 0 }, "complaint counts"},
+		{"tiny window", func(c *Config) { c.Outbound.SES.Protection.Window = time.Minute }, "window"},
+	}
+	for _, tc := range cases {
+		c := base()
+		ok(&c)
+		tc.mutfn(&c)
+		err := c.Validate()
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v", tc.name, err)
+			}
+			if !c.Outbound.SES.ReputationEnabled() {
+				t.Errorf("%s: protection not enabled", tc.name)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v; want it to mention %q", tc.name, err, tc.want)
+		}
+	}
+}

@@ -260,6 +260,34 @@ outbound:
     # Environment: XERONMX_OUTBOUND_SES_ENDPOINT
     endpoint: ""
 
+    # Sending protection. AWS reviews, then can pause, the whole account on its
+    # hard-bounce and complaint rates, so XeronMX watches each domain and
+    # suspends the one at fault before it gets there.
+    #
+    # configuration_set is added to every message relayed through SES
+    # (X-SES-CONFIGURATION-SET); in SES it publishes BOUNCE and COMPLAINT
+    # events to SNS, and SNS to the SQS queue below (raw message delivery).
+    # XeronMX long-polls that queue: nothing on this node has to be reachable
+    # from the internet. The IAM user also needs sqs:ReceiveMessage and
+    # sqs:DeleteMessage on the queue.
+    # Environment: XERONMX_OUTBOUND_SES_CONFIGURATION_SET,
+    # XERONMX_OUTBOUND_SES_EVENTS_QUEUE_URL
+    configuration_set: ""         # e.g. xeronmx
+    events_queue_url: ""          # e.g. https://sqs.eu-west-3.amazonaws.com/<account>/xeronmx-ses-events
+
+    # Limits per sender domain, over a sliding window. A suspended domain's
+    # submissions get 550 until an admin lifts it from the panel, which
+    # restarts its count. The minimums keep one mistyped address from
+    # suspending a small sender; complaints are counted, not rated.
+    protection:
+      window: 168h
+      warn_bounce_percent: 3
+      warn_min_bounces: 3
+      suspend_bounce_percent: 5
+      suspend_min_bounces: 5
+      warn_complaints: 1
+      suspend_complaints: 2
+
 # Automatic backups.
 #
 # Copying a live SQLite file with cp or a volume snapshotter can yield a corrupt

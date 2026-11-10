@@ -175,6 +175,28 @@ The IAM keys come from the environment only (`XERONMX_SES_ACCESS_KEY_ID`, `XERON
 
 They are not the SMTP credentials of the relay, which SES issues separately for `ses:SendRawEmail`. XeronMX calls the SESv2 API directly, signing with its own Signature Version 4 code (checked against AWS's published test vectors) rather than through the AWS SDK. Without `outbound.ses`, nothing about submission changes.
 
+### Sending Protection (Amazon SES)
+Amazon SES judges an account, not a sender: past about 5 % hard bounces or 0.1 % complaints it puts the whole account under review, and it can then pause it, every domain included. One customer writing to an old list could stop everybody's mail. XeronMX watches each domain and stops the one at fault first:
+- **What it reads**: with `outbound.ses.configuration_set` set, every message relayed through SES carries the `X-SES-CONFIGURATION-SET` header (SES removes it before delivery, and it is outside the DKIM signature). That configuration set publishes bounces and complaints to SNS, then to an SQS queue (`outbound.ses.events_queue_url`) that XeronMX long-polls with the same IAM user. Nothing on the node has to be reachable from the internet, and events wait in the queue while XeronMX is down.
+- **What it counts**, per sender domain over `outbound.ses.protection.window` (7 days): the recipients it sent through SES, the hard bounces and the complaints. Soft bounces, addresses already on a suppression list (SES never sent to them) and bounces of XeronMX's own bounces do not count, as with AWS. A duplicated SQS message counts once.
+- **What it does**: from 3 % hard bounces (at least 3) or 1 complaint, a warning on the timeline and an alert. From 5 % (at least 5) or 2 complaints, the domain's sending is suspended: submission answers `550 5.7.1` for that domain only, until an admin lifts the suspension from the panel, which restarts its count. Receiving is never affected. The minimums matter at low volume, where a single mistyped address would otherwise be 10 %; complaints are counted rather than rated, since one complaint already exceeds 0.1 % below a thousand mails.
+- **In the panel**: each domain's *Sending reputation* section shows its counts, the addresses that bounced or complained, and the suspend or lift button. Sending can also be suspended by hand, with or without SES.
+
+Setting it up in AWS (region `eu-west-3` here):
+
+```bash
+aws sesv2 create-configuration-set --configuration-set-name xeronmx
+aws sns create-topic --name xeronmx-ses-events
+aws sqs create-queue --queue-name xeronmx-ses-events   # then allow the topic to send to it
+aws sns subscribe --topic-arn <topic> --protocol sqs --notification-endpoint <queue-arn> \
+  --attributes RawMessageDelivery=true
+aws sesv2 create-configuration-set-event-destination --configuration-set-name xeronmx \
+  --event-destination-name to-sqs --event-destination \
+  'Enabled=true,MatchingEventTypes=BOUNCE,COMPLAINT,SnsDestination={TopicArn=<topic>}'
+```
+
+and add `sqs:ReceiveMessage` and `sqs:DeleteMessage` on the queue to the IAM user's policy.
+
 ### Cryptographic Signatures: DKIM & ARC
 - **DKIM Signing**: Generates and manages RSA-2048 and ed25519 signing keys per domain. Private keys are sealed with the master key. Signatures cover From, Reply-To, Subject, Date, To, Cc, Message-ID, In-Reply-To, References, MIME-Version, Content-Type and Content-Transfer-Encoding with relaxed canonicalization, and were verified end to end with dkimpy through a Postfix relay.
 - **ARC (Authenticated Received Chain, RFC 8617)**: Attaches `ARC-Seal`, `ARC-Message-Signature`, and `ARC-Authentication-Results` when forwarding mail to your primary server, carrying the SPF and DKIM results XeronMX checked when it received the message. Nothing is claimed that was not checked: with `smtp.sender_auth` off the seal records `none`. A message that already carries an ARC chain (Gmail and Microsoft 365 add one to everything they send) has that chain validated when it arrives, and the new set states the result (`cv=pass` or `cv=fail`); a chain that was already marked failed is not extended. Every accepted message also gets a `Received:` header naming the host that sent it, so the primary's own filters see the original hop.
@@ -309,6 +331,8 @@ outbound:
   ses:
     region: eu-west-3           # keys: XERONMX_SES_ACCESS_KEY_ID / XERONMX_SES_SECRET_ACCESS_KEY
     check_interval: 15m
+    configuration_set: xeronmx
+    events_queue_url: https://sqs.eu-west-3.amazonaws.com/<account-id>/xeronmx-ses-events
 
 dnsbl:
   enabled: false

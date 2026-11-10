@@ -89,6 +89,9 @@ submission:
   ses:
     region: ""
     checkInterval: 15m
+    # Per-domain sending protection: both are needed (see xeronmx.example.yaml).
+    configurationSet: ""
+    eventsQueueURL: ""
   service:
     type: LoadBalancer
     port: 587

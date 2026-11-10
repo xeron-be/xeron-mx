@@ -19,11 +19,16 @@ func (s *Server) handleSESStatus(w http.ResponseWriter, r *http.Request) {
 		s.ok(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
-	s.ok(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"enabled":       true,
 		"region":        s.ses.Region(),
 		"bounce_sender": s.ses.BounceSender(),
-	})
+	}
+	if s.sending != nil {
+		out["events"] = s.sending.Status()
+		out["protection"] = protectionJSON(s.sending)
+	}
+	s.ok(w, http.StatusOK, out)
 }
 
 func (s *Server) handleGetSES(w http.ResponseWriter, r *http.Request) {

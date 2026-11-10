@@ -813,6 +813,9 @@ func (s *Server) domainJSON(ctx context.Context, d *store.Domain) map[string]any
 	if list, err := s.db.DomainRecipients(ctx, d.ID); err == nil {
 		out["recipients_count"] = len(list)
 	}
+	if s.outbound.Enabled {
+		out["sending_level"] = s.sendingLevel(ctx, d)
+	}
 	if s.ses != nil {
 		out["ses_status"] = sesUnknown
 		if row, err := s.db.SESIdentityFor(ctx, d.ID); err == nil {

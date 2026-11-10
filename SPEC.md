@@ -95,6 +95,10 @@ First boot opens a web wizard at `http://<host>:8080`:
   identity not verified yet → `451 4.7.1` at submission, so the sending server
   keeps the message; verification failed in SES → `550 5.7.1`. Bounces are
   written by XeronMX and handed to the relay directly, so they are not gated
+- A domain whose sending is suspended (automatically, past its limit of hard
+  bounces or complaints reported by Amazon SES, or by hand) → `550 5.7.1` at
+  submission for that domain only, until an admin lifts it. Receiving for the
+  domain is not affected
 - Free space on the spool volume below `queue.min_free_disk_bytes` → alert,
   and `452 4.3.1` at `MAIL FROM`
 - Node in drain mode → `421 4.3.2`, so the sender defers or tries another MX
@@ -162,8 +166,9 @@ First boot opens a web wizard at `http://<host>:8080`:
 > outbound routes (v4), API tokens, webhook subscriptions with their delivery
 > outbox, cluster peers and OIDC identities (v5), the `operator` role with
 > per-user `allowed_domains` (v6), the authentication results of each
-> message and the per-domain lists of known recipients (v7), and the Amazon SES
-> identity of each domain (v11). Secrets in those tables (private keys, relay passwords, signing secrets)
+> message and the per-domain lists of known recipients (v7), the Amazon SES
+> identity of each domain (v11), and each domain's sending counters, SES
+> feedback and suspension (v12). Secrets in those tables (private keys, relay passwords, signing secrets)
 > are sealed with the same
 > master key the spool uses, so reading the database alone yields nothing usable.
 
@@ -270,6 +275,9 @@ DELETE /api/v1/domains/:id/dkim       → delete the key                        
 GET    /api/v1/domains/:id/dkim/check → does the published record match the key (also POST)
 GET    /api/v1/domains/:id/ses        → its Amazon SES identity: status, CNAME records, whether it may be deleted
 POST   /api/v1/domains/:id/ses/check  → ask SES now, creating the identity if none covers it [operator]
+GET    /api/v1/domains/:id/sending    → sending reputation: SES bounces and complaints over the window, suspension
+POST   /api/v1/domains/:id/sending/suspend → stop the domain's submissions by hand   [admin]
+POST   /api/v1/domains/:id/sending/resume  → lift a suspension (the count restarts)  [admin]
 GET    /api/v1/domains/:id/dmarc      → DMARC guidance for the domain
 POST   /api/v1/domains/:id/dmarc/check → query the live record over DoH
 

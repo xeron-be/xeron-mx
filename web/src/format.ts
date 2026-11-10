@@ -96,6 +96,9 @@ const EVENT_KEYS: Record<string, TranslationKey> = {
     ses_identity_verified: "ev.ses_identity_verified",
     ses_identity_failed: "ev.ses_identity_failed",
     ses_identity_deleted: "ev.ses_identity_deleted",
+    sending_reputation_warning: "ev.sending_reputation_warning",
+    sending_suspended: "ev.sending_suspended",
+    sending_resumed: "ev.sending_resumed",
 };
 
 export function eventLabel(type: string): string {
@@ -105,7 +108,9 @@ export function eventLabel(type: string): string {
 
 export function eventTone(type: string): "ok" | "warn" | "bad" | "mute" {
     if (type === "primary_down" || type === "mail_failed" || type === "mail_expired") return "bad";
-    if (type === "ses_identity_failed") return "bad";
+    if (type === "ses_identity_failed" || type === "sending_suspended") return "bad";
+    if (type === "sending_reputation_warning") return "warn";
+    if (type === "sending_resumed") return "ok";
     if (type === "ses_identity_verified") return "ok";
     if (type === "queue_full" || type === "mail_deferred" || type === "login_failed") return "warn";
     if (type === "mail_quarantined" || type === "mail_rejected") return "warn";

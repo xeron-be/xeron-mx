@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type DKIMCheckResult, type DKIMInfo, type DMARCDNSCheck, type DMARCInfo, type DnsGuide, type Domain, type ProbeResult, type SESInfo, type SESStatus } from "../api";
+import { api, type DKIMCheckResult, type DKIMInfo, type DMARCDNSCheck, type DMARCInfo, type DnsGuide, type Domain, type ProbeResult, type SendingInfo, type SendingLevel, type SESInfo, type SESStatus } from "../api";
 import type { TranslationKey } from "../locales/en";
 import { relative } from "../format";
 import { Alert, Card, Empty, PageHead, Pill } from "../components/ui";
@@ -193,6 +193,7 @@ function DomainCard({
     const [showRecipients, setShowRecipients] = useState(false);
     const [showSendLimit, setShowSendLimit] = useState(false);
     const [showSes, setShowSes] = useState(false);
+    const [showSending, setShowSending] = useState(domain.sending_level === "suspended");
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
 
@@ -316,6 +317,14 @@ function DomainCard({
                                 <Pill tone={sesTone(domain.ses_status)}>{t(SES_STATUS_KEYS[domain.ses_status])}</Pill>
                             </>
                         )}
+                        {domain.sending_level && domain.sending_level !== "ok" && (
+                            <>
+                                {" "}
+                                <Pill tone={sendingTone(domain.sending_level)}>
+                                    {t(SENDING_LEVEL_KEYS[domain.sending_level])}
+                                </Pill>
+                            </>
+                        )}
                     </h2>
                     <p>
                         <span className="mono">
@@ -348,6 +357,11 @@ function DomainCard({
                     {domain.ses_status && (
                         <button className="btn-sm" onClick={() => setShowSes(!showSes)}>
                             {t("domains.ses")}
+                        </button>
+                    )}
+                    {domain.sending_level && (
+                        <button className="btn-sm" onClick={() => setShowSending(!showSending)}>
+                            {t("domains.sending")}
                         </button>
                     )}
                     <button className="btn-sm" onClick={() => setShowRecipients(!showRecipients)}>
@@ -450,6 +464,8 @@ function DomainCard({
             )}
 
             {showSes && <SESSection domain={domain} canCheck={canTest} onChanged={onChanged} />}
+
+            {showSending && <SendingSection domain={domain} canEdit={canEdit} onChanged={onChanged} />}
 
             {showRecipients && <RecipientsSection domain={domain} canEdit={canEdit} onChanged={onChanged} />}
 
@@ -637,6 +653,175 @@ export function sesTone(status: SESStatus): "ok" | "warn" | "bad" | "mute" {
     if (status === "failed" || status === "error") return "bad";
     if (status === "pending") return "warn";
     return "mute";
+}
+
+const SENDING_LEVEL_KEYS: Record<SendingLevel, TranslationKey> = {
+    ok: "domains.sendingLevel.ok",
+    warning: "domains.sendingLevel.warning",
+    suspended: "domains.sendingLevel.suspended",
+};
+
+export function sendingTone(level: SendingLevel): "ok" | "warn" | "bad" {
+    if (level === "suspended") return "bad";
+    if (level === "warning") return "warn";
+    return "ok";
+}
+
+function SendingSection({
+    domain,
+    canEdit,
+    onChanged,
+}: {
+    domain: Domain;
+    canEdit: boolean;
+    onChanged: () => void;
+}) {
+    const t = useT();
+    const [info, setInfo] = useState<SendingInfo | null>(null);
+    const [error, setError] = useState("");
+    const [busy, setBusy] = useState(false);
+
+    useEffect(() => {
+        let live = true;
+        api.getSending(domain.id)
+            .then((res) => live && setInfo(res))
+            .catch((err) => live && setError(err instanceof Error ? err.message : t("common.somethingWrong")));
+        return () => {
+            live = false;
+        };
+    }, [domain.id, domain.sending_level]);
+
+    async function act(resume: boolean) {
+        const question = resume
+            ? t("domains.sendingResumeConfirm", { name: domain.name })
+            : t("domains.sendingSuspendConfirm", { name: domain.name });
+        if (!confirm(question)) return;
+        setBusy(true);
+        setError("");
+        try {
+            setInfo(await (resume ? api.resumeSending(domain.id) : api.suspendSending(domain.id)));
+            onChanged();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : t("common.somethingWrong"));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    const limits = info?.limits;
+    const reasonKey: TranslationKey =
+        info?.suspended_reason === "complaints"
+            ? "domains.sendingReason.complaints"
+            : info?.suspended_reason === "manual"
+              ? "domains.sendingReason.manual"
+              : "domains.sendingReason.bounces";
+
+    return (
+        <div className="dkim-block">
+            <div className="dkim-header">
+                <div>
+                    <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        {t("domains.sendingTitle")}
+                        {info && <Pill tone={sendingTone(info.level)}>{t(SENDING_LEVEL_KEYS[info.level])}</Pill>}
+                    </h3>
+                    <p style={{ margin: "0.25rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
+                        {t("domains.sendingSubtitle")}
+                    </p>
+                </div>
+            </div>
+
+            {error && <Alert>{error}</Alert>}
+
+            {info && (
+                <>
+                    {info.suspended && (
+                        <Alert tone="bad">
+                            <strong>{t("domains.sendingSuspended")}</strong> {t(reasonKey)}{" "}
+                            {info.suspended_at && t("domains.sendingSince", { when: relative(info.suspended_at) })}
+                            {info.suspended_by && info.suspended_by !== "auto" && <> · {info.suspended_by}</>}
+                        </Alert>
+                    )}
+                    {!info.suspended && info.level === "warning" && (
+                        <Alert tone="warn">{t("domains.sendingWarning")}</Alert>
+                    )}
+
+                    {info.monitored && limits ? (
+                        <>
+                            <p style={{ margin: "0.5rem 0" }}>
+                                {t("domains.sendingWindow", {
+                                    hours: limits.window_hours,
+                                    sent: info.sent ?? 0,
+                                    bounces: info.bounces ?? 0,
+                                    percent: info.bounce_percent ?? 0,
+                                    complaints: info.complaints ?? 0,
+                                })}
+                            </p>
+                            <p style={{ margin: "0 0 0.5rem", fontSize: "0.85rem", color: "var(--muted)" }}>
+                                {t("domains.sendingLimits", {
+                                    wb: limits.warn_bounce_percent,
+                                    wmin: limits.warn_min_bounces,
+                                    sb: limits.suspend_bounce_percent,
+                                    smin: limits.suspend_min_bounces,
+                                    wc: limits.warn_complaints,
+                                    sc: limits.suspend_complaints,
+                                })}
+                            </p>
+                            {info.feedback && info.feedback.length > 0 ? (
+                                <div className="table-wrap">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>{t("domains.sendingThKind")}</th>
+                                                <th>{t("domains.sendingThWhen")}</th>
+                                                <th>{t("domains.sendingThRecipient")}</th>
+                                                <th>{t("domains.sendingThSender")}</th>
+                                                <th>{t("domains.sendingThDetail")}</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {info.feedback.map((f, i) => (
+                                                <tr key={i}>
+                                                    <td>
+                                                        <Pill tone={f.kind === "complaint" ? "bad" : "warn"}>
+                                                            {t(f.kind === "complaint" ? "domains.sendingComplaint" : "domains.sendingBounce")}
+                                                        </Pill>
+                                                    </td>
+                                                    <td style={{ whiteSpace: "nowrap" }}>{relative(f.occurred_at)}</td>
+                                                    <td className="mono">{f.recipient}</td>
+                                                    <td className="mono">{f.sender}</td>
+                                                    <td className="mono" style={{ fontSize: ".85em", minWidth: "16rem" }}>{f.detail}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                <p style={{ color: "var(--muted)" }}>{t("domains.sendingNoFeedback")}</p>
+                            )}
+                        </>
+                    ) : (
+                        <p style={{ margin: "0.5rem 0", fontSize: "0.85rem", color: "var(--muted)" }}>
+                            {t("domains.sendingNotMonitored")}
+                        </p>
+                    )}
+
+                    {canEdit && (
+                        <div className="row" style={{ marginTop: "1rem" }}>
+                            {info.suspended ? (
+                                <button type="button" className="btn-sm" onClick={() => act(true)} disabled={busy}>
+                                    {t("domains.sendingResume")}
+                                </button>
+                            ) : (
+                                <button type="button" className="btn-sm btn-danger" onClick={() => act(false)} disabled={busy}>
+                                    {t("domains.sendingSuspend")}
+                                </button>
+                            )}
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
+    );
 }
 
 function SESSection({

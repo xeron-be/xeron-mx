@@ -196,6 +196,13 @@ func (s *Sender) deliver(ctx context.Context, m *store.Message) {
 }
 
 func (s *Sender) settle(ctx context.Context, log *slog.Logger, m *store.Message, d *store.Domain, res recipients, closeBody func()) {
+	// Bounces XeronMX writes itself (null sender) are not the domain's mail,
+	// and SES events about them are not counted against it either.
+	if res.viaSES && m.EnvelopeFrom != "" && len(res.accepted) > 0 {
+		if err := s.db.RecordSent(ctx, m.DomainID, len(res.accepted), time.Now()); err != nil {
+			log.Warn("could not count the recipients sent", "error", err)
+		}
+	}
 	if len(res.rejected) > 0 {
 		rejected := addresses(res.rejected)
 		log.Warn("recipients permanently rejected by "+peer(m), "recipients", rejected, "error", res.rejected[0].err)

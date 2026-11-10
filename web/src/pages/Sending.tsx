@@ -282,6 +282,30 @@ function SESCard({ ses }: { ses: SESOverview }) {
                                         : t("sending.sesBounceMissing")}
                             </Alert>
                         )}
+                        {ses.events ? (
+                            <Alert tone={ses.events.last_error ? "bad" : "ok"}>
+                                {ses.events.last_error
+                                    ? t("sending.sesEventsError", { error: ses.events.last_error })
+                                    : t("sending.sesEventsOk", {
+                                          when: relative(ses.events.last_poll_at ?? null),
+                                          n: ses.events.recorded,
+                                      })}
+                                {ses.protection && (
+                                    <div style={{ marginTop: ".35rem", fontSize: ".85rem" }}>
+                                        {t("sending.sesProtection", {
+                                            sb: ses.protection.suspend_bounce_percent,
+                                            smin: ses.protection.suspend_min_bounces,
+                                            sc: ses.protection.suspend_complaints,
+                                            hours: ses.protection.window_hours,
+                                        })}
+                                    </div>
+                                )}
+                            </Alert>
+                        ) : (
+                            <p style={{ margin: ".5rem 0 0", fontSize: ".85rem", color: "var(--muted)" }}>
+                                {t("sending.sesEventsOff")}
+                            </p>
+                        )}
                     </>
                 )}
             </Card>

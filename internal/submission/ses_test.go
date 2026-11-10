@@ -3,7 +3,9 @@ package submission
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/emersion/go-smtp"
 
@@ -67,5 +69,35 @@ func TestWithoutSESNothingChanges(t *testing.T) {
 	h.addUser(t, "mailserver", nil)
 	if err := h.send(t, "a@example.com", "x@far.example"); err != nil {
 		t.Fatalf("a domain with no SES identity was refused with SES off: %v", err)
+	}
+}
+
+func TestASuspendedDomainIsRefusedForGood(t *testing.T) {
+	for _, tc := range []struct {
+		reason, want string
+	}{
+		{"bounces", "too many bounces or complaints"},
+		{"manual", "suspended by the administrator"},
+	} {
+		h := newHarness(t)
+		id := h.addDomain(t, "example.com")
+		h.addDomain(t, "other.example")
+		h.addUser(t, "mailserver", nil)
+		if _, err := h.db.SuspendSending(context.Background(), id, tc.reason, "auto", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		err := h.send(t, "a@example.com", "x@far.example")
+		if smtpCode(err) != 550 || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: %v", tc.reason, err)
+		}
+		if err := h.send(t, "a@other.example", "x@far.example"); err != nil {
+			t.Fatalf("another domain was refused: %v", err)
+		}
+		if _, err := h.db.ResumeSending(context.Background(), id, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.send(t, "a@example.com", "x@far.example"); err != nil {
+			t.Fatalf("still refused once resumed: %v", err)
+		}
 	}
 }
