@@ -129,4 +129,10 @@ const (
 	ErrInvalidRecipient          = "invalid_recipient"
 	ErrRecipientsReadFailed      = "recipients_read_failed"
 	ErrRecipientsUpdateFailed    = "recipients_update_failed"
+	ErrSESDisabled               = "ses_disabled"
+	ErrSESReadFailed             = "ses_read_failed"
+	ErrSESCheckFailed            = "ses_check_failed"
+	ErrSESIdentityNotManaged     = "ses_identity_not_managed"
+	ErrSESIdentityInUse          = "ses_identity_in_use"
+	ErrSESDeleteFailed           = "ses_delete_failed"
 )

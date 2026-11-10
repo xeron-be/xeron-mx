@@ -234,6 +234,32 @@ outbound:
   # Environment: XERONMX_OUTBOUND_REQUIRE_TLS
   require_tls: true
 
+  # Amazon SES sending identities. Off unless a region is set; without it,
+  # nothing about submission changes.
+  #
+  # With SES as the relay (relay_host: email-smtp.<region>.amazonaws.com), SES
+  # only sends for verified domains. XeronMX then creates each configured
+  # domain's identity with Easy DKIM (RSA 2048), unless a parent domain's
+  # identity already covers it, shows the three CNAME records to publish in the
+  # panel, and follows the verification. Submission answers 451 for a domain
+  # still being verified (the sending server keeps the mail and retries) and
+  # 550 once SES has given up on it. Bounces are not affected.
+  #
+  # The IAM keys are read from the environment only, never from this file:
+  #   XERONMX_SES_ACCESS_KEY_ID, XERONMX_SES_SECRET_ACCESS_KEY
+  # They need ses:CreateEmailIdentity, ses:GetEmailIdentity and
+  # ses:DeleteEmailIdentity. They are not the SMTP credentials above, which
+  # SES derives separately for sending.
+  ses:
+    # Environment: XERONMX_OUTBOUND_SES_REGION
+    region: ""                  # e.g. eu-west-3
+    # How often each identity's status is asked of SES. Environment:
+    # XERONMX_OUTBOUND_SES_CHECK_INTERVAL
+    check_interval: 15m
+    # Only for a VPC endpoint or a local stand-in such as LocalStack.
+    # Environment: XERONMX_OUTBOUND_SES_ENDPOINT
+    endpoint: ""
+
 # Automatic backups.
 #
 # Copying a live SQLite file with cp or a volume snapshotter can yield a corrupt

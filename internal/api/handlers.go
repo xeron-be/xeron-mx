@@ -494,6 +494,10 @@ func (s *Server) handleCreateDomain(w http.ResponseWriter, r *http.Request) {
 		d = stored
 	}
 
+	if s.ses != nil {
+		s.ses.Trigger()
+	}
+
 	s.log.Info("domain added", "name", d.Name, "primary", d.PrimaryHost)
 	s.audit(r.Context(), r, &store.Event{
 		Type: "domain_added", DomainID: &id, UserID: &userFrom(r).ID,
@@ -551,6 +555,17 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The SES identity goes first and only when asked: once the domain row is
+	// gone nothing would remember which identity was ours to delete, and a
+	// refusal here leaves the domain in place to try again.
+	deleteSES := r.URL.Query().Get("ses_identity") == "delete"
+	if deleteSES {
+		if code, status := s.deleteSESIdentity(ctx, r, d); code != "" {
+			s.fail(w, r, status, code)
+			return
+		}
+	}
+
 	msgs, err := s.db.ListMessages(ctx, store.ListFilter{DomainID: d.ID, Limit: 500})
 	if err == nil {
 		for _, m := range msgs {
@@ -568,7 +583,8 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		Type: "domain_deleted", UserID: &userFrom(r).ID,
 		Data: map[string]any{"name": d.Name, "discarded": pending},
 	})
-	s.ok(w, http.StatusOK, map[string]any{"deleted": d.Name, "discarded_messages": pending})
+	s.ok(w, http.StatusOK, map[string]any{"deleted": d.Name, "discarded_messages": pending,
+		"ses_identity_deleted": deleteSES})
 }
 
 func (s *Server) handleTestDomain(w http.ResponseWriter, r *http.Request) {
@@ -796,6 +812,12 @@ func (s *Server) domainJSON(ctx context.Context, d *store.Domain) map[string]any
 	}
 	if list, err := s.db.DomainRecipients(ctx, d.ID); err == nil {
 		out["recipients_count"] = len(list)
+	}
+	if s.ses != nil {
+		out["ses_status"] = sesUnknown
+		if row, err := s.db.SESIdentityFor(ctx, d.ID); err == nil {
+			out["ses_status"] = row.Status
+		}
 	}
 	return out
 }

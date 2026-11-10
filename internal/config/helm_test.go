@@ -26,6 +26,10 @@ func TestHelmChartRendersLoadableConfig(t *testing.T) {
 	}
 
 	t.Setenv("XERONMX_CLUSTER_SECRET", "a shared secret of sixteen plus")
+	// In a real install these come from existingSecret, which the chart never
+	// renders, so the test supplies them the way the pod's environment would.
+	t.Setenv("XERONMX_SES_ACCESS_KEY_ID", "AKIDTEST")
+	t.Setenv("XERONMX_SES_SECRET_ACCESS_KEY", "test")
 
 	cases := []struct {
 		name  string
@@ -63,6 +67,16 @@ func TestHelmChartRendersLoadableConfig(t *testing.T) {
 			"--set", "oidc.clientID=xeronmx",
 			"--set", "ui.baseURL=https://mx2.example.com",
 		}, nil},
+		{"submission through ses", []string{
+			"--set", "submission.enabled=true",
+			"--set", "submission.relayHost=email-smtp.eu-west-3.amazonaws.com",
+			"--set", "submission.requireTLS=false",
+			"--set", "submission.ses.region=eu-west-3",
+		}, func(t *testing.T, c *Config) {
+			if c.Outbound.SES.Region != "eu-west-3" || c.Outbound.SES.CheckInterval.String() != "15m0s" {
+				t.Fatalf("ses = %+v", c.Outbound.SES)
+			}
+		}},
 		{"submission and tls", []string{
 			"--set", "submission.enabled=true",
 			"--set", "submission.relayHost=smtp.example.com",

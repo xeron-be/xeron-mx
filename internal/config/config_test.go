@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -281,5 +283,76 @@ func TestPrivateDestinationsAreRefusedUnlessAllowed(t *testing.T) {
 	}
 	if !c.Queue.AllowPrivateDestinations {
 		t.Fatal("XERONMX_QUEUE_ALLOW_PRIVATE_DESTINATIONS=true was ignored")
+	}
+}
+
+func TestSESIsOffUnlessARegionIsSet(t *testing.T) {
+	c := base()
+	if c.Outbound.SES.Enabled() {
+		t.Fatal("SES is on by default")
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSESValidation(t *testing.T) {
+	ok := func(c *Config) {
+		c.Outbound.Enabled = true
+		c.Outbound.RelayHost = "email-smtp.eu-west-3.amazonaws.com"
+		c.Outbound.SES.Region = "eu-west-3"
+		c.Outbound.SES.AccessKeyID = "AKIDTEST"
+		c.Outbound.SES.SecretAccessKey = "secret"
+	}
+	cases := []struct {
+		name  string
+		mutfn func(*Config)
+		want  string
+	}{
+		{"valid", func(c *Config) {}, ""},
+		{"outbound off", func(c *Config) { c.Outbound.Enabled = false }, "outbound.enabled"},
+		{"bad region", func(c *Config) { c.Outbound.SES.Region = "paris" }, "region"},
+		{"no keys", func(c *Config) { c.Outbound.SES.SecretAccessKey = "" }, "XERONMX_SES_SECRET_ACCESS_KEY"},
+		{"interval too short", func(c *Config) { c.Outbound.SES.CheckInterval = time.Second }, "check_interval"},
+		{"bad endpoint", func(c *Config) { c.Outbound.SES.Endpoint = "localhost:4566" }, "endpoint"},
+		{"local endpoint", func(c *Config) { c.Outbound.SES.Endpoint = "http://localhost:4566" }, ""},
+	}
+	for _, tc := range cases {
+		c := base()
+		ok(&c)
+		tc.mutfn(&c)
+		err := c.Validate()
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: %v", tc.name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v; want it to mention %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+func TestSESKeysComeFromTheEnvironmentOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.yaml")
+	yaml := "data_dir: " + dir + "\noutbound:\n  enabled: true\n  relay_host: smtp.example\n" +
+		"  ses:\n    region: eu-west-3\n    access_key_id: FROMYAML\n    secret_access_key: FROMYAML\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "XERONMX_SES_ACCESS_KEY_ID") {
+		t.Fatalf("keys were read from the YAML file: %v", err)
+	}
+
+	t.Setenv("XERONMX_SES_ACCESS_KEY_ID", "AKIDENV")
+	t.Setenv("XERONMX_SES_SECRET_ACCESS_KEY", "fromenv")
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Outbound.SES.AccessKeyID != "AKIDENV" || c.Outbound.SES.CheckInterval != 15*time.Minute {
+		t.Fatalf("ses = %+v", c.Outbound.SES)
 	}
 }

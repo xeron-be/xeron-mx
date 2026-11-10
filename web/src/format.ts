@@ -93,6 +93,9 @@ const EVENT_KEYS: Record<string, TranslationKey> = {
     totp_reset: "ev.totp_reset",
     totp_recovery_code_used: "ev.totp_recovery_code_used",
     totp_recovery_codes_renewed: "ev.totp_recovery_codes_renewed",
+    ses_identity_verified: "ev.ses_identity_verified",
+    ses_identity_failed: "ev.ses_identity_failed",
+    ses_identity_deleted: "ev.ses_identity_deleted",
 };
 
 export function eventLabel(type: string): string {
@@ -102,6 +105,8 @@ export function eventLabel(type: string): string {
 
 export function eventTone(type: string): "ok" | "warn" | "bad" | "mute" {
     if (type === "primary_down" || type === "mail_failed" || type === "mail_expired") return "bad";
+    if (type === "ses_identity_failed") return "bad";
+    if (type === "ses_identity_verified") return "ok";
     if (type === "queue_full" || type === "mail_deferred" || type === "login_failed") return "warn";
     if (type === "mail_quarantined" || type === "mail_rejected") return "warn";
     if (type === "totp_disabled" || type === "totp_reset" || type === "totp_recovery_code_used") return "warn";

@@ -82,6 +82,13 @@ submission:
   relayPort: 587
   relayTLS: starttls
   requireTLS: true
+  # Amazon SES identity management (outbound.ses). Off while region is empty.
+  # The IAM keys go in existingSecret as XERONMX_SES_ACCESS_KEY_ID and
+  # XERONMX_SES_SECRET_ACCESS_KEY; there is deliberately no plaintext value
+  # for them here.
+  ses:
+    region: ""
+    checkInterval: 15m
   service:
     type: LoadBalancer
     port: 587
@@ -246,7 +253,8 @@ cluster:
 # A pre-existing Secret holding any of:
 #   XERONMX_CLUSTER_SECRET, XERONMX_OIDC_CLIENT_SECRET,
 #   XERONMX_METRICS_TOKEN, XERONMX_OUTBOUND_RELAY_PASSWORD,
-#   XERONMX_ALERTS_EMAIL_PASSWORD, XERONMX_SPAM_PASSWORD
+#   XERONMX_ALERTS_EMAIL_PASSWORD, XERONMX_SPAM_PASSWORD,
+#   XERONMX_SES_ACCESS_KEY_ID, XERONMX_SES_SECRET_ACCESS_KEY
 # Keys present here win over the plaintext values above.
 existingSecret: ""
 

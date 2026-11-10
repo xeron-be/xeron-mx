@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { api, type DKIMCheckResult, type DKIMInfo, type DMARCDNSCheck, type DMARCInfo, type DnsGuide, type Domain, type ProbeResult } from "../api";
+import { api, type DKIMCheckResult, type DKIMInfo, type DMARCDNSCheck, type DMARCInfo, type DnsGuide, type Domain, type ProbeResult, type SESInfo, type SESStatus } from "../api";
+import type { TranslationKey } from "../locales/en";
 import { relative } from "../format";
 import { Alert, Card, Empty, PageHead, Pill } from "../components/ui";
 import { useAsync } from "../useAsync";
@@ -191,6 +192,7 @@ function DomainCard({
     const [dmarcLoading, setDmarcLoading] = useState(false);
     const [showRecipients, setShowRecipients] = useState(false);
     const [showSendLimit, setShowSendLimit] = useState(false);
+    const [showSes, setShowSes] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
 
@@ -274,9 +276,23 @@ function DomainCard({
                 : t("domains.deleteConfirm", { name: domain.name });
         if (!confirm(warning)) return;
 
+        // Removing the SES identity is a separate, explicit choice, offered only
+        // when XeronMX created it and no other domain sends under it.
+        let deleteSes = false;
+        if (domain.ses_status && domain.ses_status !== "unknown") {
+            try {
+                const ses = await api.getSES(domain.id);
+                if (ses.deletable && ses.identity) {
+                    deleteSes = confirm(t("domains.sesDeleteAlso", { identity: ses.identity }));
+                }
+            } catch {
+                // Not knowing is not a reason to block the deletion: the identity is kept.
+            }
+        }
+
         setBusy(true);
         try {
-            await api.deleteDomain(domain.id, pending > 0);
+            await api.deleteDomain(domain.id, pending > 0, deleteSes);
             onChanged();
         } catch (err) {
             setError(err instanceof Error ? err.message : t("domains.couldNotDelete"));
@@ -294,6 +310,12 @@ function DomainCard({
                             {up ? t("domains.primaryUp") : t("domains.primaryDown")}
                         </Pill>
                         {!domain.enabled && <> <Pill tone="mute">{t("dash.paused")}</Pill></>}
+                        {domain.ses_status && (
+                            <>
+                                {" "}
+                                <Pill tone={sesTone(domain.ses_status)}>{t(SES_STATUS_KEYS[domain.ses_status])}</Pill>
+                            </>
+                        )}
                     </h2>
                     <p>
                         <span className="mono">
@@ -323,6 +345,11 @@ function DomainCard({
                     <button className="btn-sm" onClick={toggleDmarc}>
                         {t("domains.dmarc")}
                     </button>
+                    {domain.ses_status && (
+                        <button className="btn-sm" onClick={() => setShowSes(!showSes)}>
+                            {t("domains.ses")}
+                        </button>
+                    )}
                     <button className="btn-sm" onClick={() => setShowRecipients(!showRecipients)}>
                         {t("domains.recipients")}
                     </button>
@@ -421,6 +448,8 @@ function DomainCard({
                     }}
                 />
             )}
+
+            {showSes && <SESSection domain={domain} canCheck={canTest} onChanged={onChanged} />}
 
             {showRecipients && <RecipientsSection domain={domain} canEdit={canEdit} onChanged={onChanged} />}
 
@@ -592,6 +621,143 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
         <button type="button" className="btn-copy" onClick={copy}>
             {copied ? t("domains.copied") : (label ?? t("domains.copy"))}
         </button>
+    );
+}
+
+const SES_STATUS_KEYS: Record<SESStatus, TranslationKey> = {
+    unknown: "domains.sesStatus.unknown",
+    pending: "domains.sesStatus.pending",
+    verified: "domains.sesStatus.verified",
+    failed: "domains.sesStatus.failed",
+    error: "domains.sesStatus.error",
+};
+
+export function sesTone(status: SESStatus): "ok" | "warn" | "bad" | "mute" {
+    if (status === "verified") return "ok";
+    if (status === "failed" || status === "error") return "bad";
+    if (status === "pending") return "warn";
+    return "mute";
+}
+
+function SESSection({
+    domain,
+    canCheck,
+    onChanged,
+}: {
+    domain: Domain;
+    canCheck: boolean;
+    onChanged: () => void;
+}) {
+    const t = useT();
+    const [info, setInfo] = useState<SESInfo | null>(null);
+    const [error, setError] = useState("");
+    const [checking, setChecking] = useState(false);
+
+    useEffect(() => {
+        let live = true;
+        api.getSES(domain.id)
+            .then((res) => live && setInfo(res))
+            .catch((err) => live && setError(err instanceof Error ? err.message : t("domains.couldNotLoadSes")));
+        return () => {
+            live = false;
+        };
+    }, [domain.id]);
+
+    async function check() {
+        setChecking(true);
+        setError("");
+        try {
+            const res = await api.checkSES(domain.id);
+            setInfo(res);
+            if (res.status !== domain.ses_status) onChanged();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : t("common.somethingWrong"));
+        } finally {
+            setChecking(false);
+        }
+    }
+
+    const status = info?.status ?? "unknown";
+    const records = info?.records ?? [];
+
+    return (
+        <div className="dkim-block">
+            <div className="dkim-header">
+                <div>
+                    <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                        {t("domains.sesTitle")}
+                        {info && <Pill tone={sesTone(status)}>{t(SES_STATUS_KEYS[status])}</Pill>}
+                    </h3>
+                    <p style={{ margin: "0.25rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
+                        {t("domains.sesSubtitle")}
+                    </p>
+                </div>
+            </div>
+
+            {error && <Alert>{error}</Alert>}
+
+            {info && (
+                <>
+                    <p style={{ fontSize: "0.85rem", color: "var(--muted)", margin: "0.5rem 0" }}>
+                        {info.identity && (
+                            <>
+                                {t("domains.sesIdentity")}: <span className="mono">{info.identity}</span> ·{" "}
+                            </>
+                        )}
+                        {t("domains.sesRegion")}: <span className="mono">{info.region}</span>
+                        {info.checked_at && <> · {t("domains.sesCheckedAt", { when: relative(info.checked_at) })}</>}
+                    </p>
+
+                    {status === "unknown" && <Alert tone="warn">{t("domains.sesNotChecked")}</Alert>}
+                    {status === "verified" && <Alert tone="ok">{t("domains.sesVerifiedOk")}</Alert>}
+                    {(status === "pending" || status === "error") && (
+                        <Alert tone="warn">{t("domains.sesPendingBlock")}</Alert>
+                    )}
+                    {status === "failed" && <Alert tone="bad">{t("domains.sesFailedBlock")}</Alert>}
+
+                    {info.last_error && (
+                        <Alert tone="warn">
+                            {t("domains.sesLastError")} <span className="mono">{info.last_error}</span>
+                        </Alert>
+                    )}
+
+                    {info.inherited && info.identity && (
+                        <p style={{ margin: "0.5rem 0" }}>{t("domains.sesInherited", { identity: info.identity })}</p>
+                    )}
+                    {!info.inherited && info.identity && !info.managed && (
+                        <p style={{ margin: "0.5rem 0", fontSize: "0.85rem", color: "var(--muted)" }}>
+                            {t("domains.sesAdopted")}
+                        </p>
+                    )}
+
+                    {!info.inherited && records.length > 0 && status !== "verified" && (
+                        <p style={{ margin: "0.5rem 0" }}>{t("domains.sesPublish")}</p>
+                    )}
+                    {!info.inherited &&
+                        records.map((r) => (
+                            <div key={r.name} className="dkim-field">
+                                <label>{r.type}</label>
+                                <div className="dkim-copy-box">
+                                    <code>{r.name}</code>
+                                    <CopyButton text={r.name} />
+                                </div>
+                                <div className="dkim-copy-box" style={{ marginTop: "0.25rem" }}>
+                                    <code>{r.value}</code>
+                                    <CopyButton text={r.value} />
+                                </div>
+                            </div>
+                        ))}
+
+                    {canCheck && (
+                        <div className="row" style={{ marginTop: "1rem" }}>
+                            <button type="button" className="btn-sm" onClick={check} disabled={checking}>
+                                {checking ? t("domains.sesChecking") : t("domains.sesCheck")}
+                            </button>
+                        </div>
+                    )}
+                </>
+            )}
+        </div>
     );
 }
 

@@ -108,6 +108,18 @@ func (a *Alerter) Notify(event string, payload map[string]any) {
 				"Drain the queue or raise queue.max_messages / queue.max_bytes.",
 			Data: payload,
 		})
+	case store.EventSESFailed:
+		domain, _ := payload["domain"].(string)
+		identity, _ := payload["identity"].(string)
+		a.emit(Alert{
+			Key:      "ses_failed:" + domain,
+			Severity: SeverityWarning,
+			Title:    fmt.Sprintf("Amazon SES gave up verifying %s", identity),
+			Detail: fmt.Sprintf("SES could not find the DKIM records of %s, so submission now refuses "+
+				"mail from %s with 550. Publish the three CNAME records shown in the panel, then "+
+				"delete and re-add the domain, or recreate the identity in SES.", identity, domain),
+			Data: payload,
+		})
 	case store.EventMailExpired:
 		a.emit(Alert{
 			Key:      "mail_expired",

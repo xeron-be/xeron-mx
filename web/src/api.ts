@@ -175,6 +175,42 @@ export interface Domain {
     primary?: PrimaryState;
     pending?: number;
     recipients_count?: number;
+    ses_status?: SESStatus;
+}
+
+export type SESStatus = "unknown" | "pending" | "verified" | "failed" | "error";
+
+export interface SESRecord {
+    type: string;
+    name: string;
+    value: string;
+}
+
+export interface SESInfo {
+    enabled: boolean;
+    domain: string;
+    region?: string;
+    status?: SESStatus;
+    identity?: string;
+    inherited?: boolean;
+    managed?: boolean;
+    records?: SESRecord[];
+    last_error?: string;
+    checked_at?: string | null;
+    deletable?: boolean;
+    dependents?: string[];
+}
+
+export interface SESOverview {
+    enabled: boolean;
+    region?: string;
+    bounce_sender?: {
+        sender: string;
+        identity?: string;
+        status: SESStatus;
+        error?: string;
+        checked_at?: string | null;
+    };
 }
 
 export interface DKIMInfo {
@@ -421,10 +457,18 @@ export const api = {
     createDomain: (input: DomainInput) => post<Domain>("/domains", input),
     updateDomain: (id: number, input: DomainInput) =>
         request<Domain>(`/domains/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
-    deleteDomain: (id: number, force = false) =>
-        request<{ deleted: string }>(`/domains/${id}${force ? "?force=true" : ""}`, {
+    deleteDomain: (id: number, force = false, deleteSESIdentity = false) => {
+        const params = new URLSearchParams();
+        if (force) params.set("force", "true");
+        if (deleteSESIdentity) params.set("ses_identity", "delete");
+        const query = params.toString();
+        return request<{ deleted: string }>(`/domains/${id}${query ? `?${query}` : ""}`, {
             method: "DELETE",
-        }),
+        });
+    },
+    sesOverview: () => request<SESOverview>("/ses"),
+    getSES: (id: number) => request<SESInfo>(`/domains/${id}/ses`),
+    checkSES: (id: number) => post<SESInfo>(`/domains/${id}/ses/check`),
     testDomain: (id: number) => post<ProbeResult>(`/domains/${id}/test`),
     domainDns: (id: number) => request<DnsGuide>(`/domains/${id}/dns`),
     getDKIM: (id: number) => request<DKIMInfo>(`/domains/${id}/dkim`),

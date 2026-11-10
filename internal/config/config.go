@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -151,7 +153,31 @@ type OutboundConfig struct {
 	MaxConnections int `yaml:"max_connections"`
 
 	RequireTLS bool `yaml:"require_tls"`
+
+	SES SESConfig `yaml:"ses"`
 }
+
+// SESConfig turns on the management of Amazon SES sending identities. It is
+// off unless a region is set, and then nothing about submission changes.
+type SESConfig struct {
+	Region string `yaml:"region"`
+
+	CheckInterval time.Duration `yaml:"check_interval"`
+
+	// Endpoint overrides https://email.<region>.amazonaws.com, for a VPC
+	// endpoint or a local stand-in such as LocalStack.
+	Endpoint string `yaml:"endpoint"`
+
+	// The IAM keys are read from the environment only, never from the YAML
+	// file: that file is exported, synced between nodes and pasted into
+	// tickets, and an AWS key in it would travel with it.
+	AccessKeyID     string `yaml:"-"`
+	SecretAccessKey string `yaml:"-"`
+}
+
+func (s SESConfig) Enabled() bool { return s.Region != "" }
+
+var sesRegion = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
 
 type AlertConfig struct {
 	Enabled          bool             `yaml:"enabled"`
@@ -342,6 +368,7 @@ func Default() Config {
 			MaxMessageBytes: 50 << 20,
 			MaxConnections:  100,
 			RequireTLS:      true,
+			SES:             SESConfig{CheckInterval: 15 * time.Minute},
 		},
 		Alerts: AlertConfig{
 			PrimaryDownAfter: 5 * time.Minute,
@@ -485,6 +512,11 @@ func applyEnv(cfg *Config) {
 	str("XERONMX_OUTBOUND_RELAY_TLS", &cfg.Outbound.RelayTLS)
 	str("XERONMX_OUTBOUND_RELAY_USERNAME", &cfg.Outbound.RelayUsername)
 	str("XERONMX_OUTBOUND_RELAY_PASSWORD", &cfg.Outbound.RelayPassword)
+	str("XERONMX_OUTBOUND_SES_REGION", &cfg.Outbound.SES.Region)
+	dur("XERONMX_OUTBOUND_SES_CHECK_INTERVAL", &cfg.Outbound.SES.CheckInterval)
+	str("XERONMX_OUTBOUND_SES_ENDPOINT", &cfg.Outbound.SES.Endpoint)
+	str("XERONMX_SES_ACCESS_KEY_ID", &cfg.Outbound.SES.AccessKeyID)
+	str("XERONMX_SES_SECRET_ACCESS_KEY", &cfg.Outbound.SES.SecretAccessKey)
 	if v, ok := os.LookupEnv("XERONMX_OUTBOUND_RELAY_PORT"); ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Outbound.RelayPort = n
@@ -764,6 +796,28 @@ func (c *Config) Validate() error {
 		}
 		if c.Outbound.MaxMessageBytes <= 0 {
 			return fmt.Errorf("outbound.max_message_bytes must be positive")
+		}
+	}
+
+	if ses := c.Outbound.SES; ses.Enabled() {
+		if !c.Outbound.Enabled {
+			return fmt.Errorf("outbound.ses needs outbound.enabled: the identities only gate submission on port 587")
+		}
+		if !sesRegion.MatchString(ses.Region) {
+			return fmt.Errorf("outbound.ses.region must be an AWS region such as eu-west-3, got %q", ses.Region)
+		}
+		if ses.AccessKeyID == "" || ses.SecretAccessKey == "" {
+			return fmt.Errorf("outbound.ses.region is set but XERONMX_SES_ACCESS_KEY_ID and " +
+				"XERONMX_SES_SECRET_ACCESS_KEY are not: the IAM keys come from the environment only")
+		}
+		if ses.CheckInterval < time.Minute {
+			return fmt.Errorf("outbound.ses.check_interval must be at least 1m")
+		}
+		if ses.Endpoint != "" {
+			u, err := url.Parse(ses.Endpoint)
+			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("outbound.ses.endpoint must be an http(s) URL, got %q", ses.Endpoint)
+			}
 		}
 	}
 

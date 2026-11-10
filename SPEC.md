@@ -91,6 +91,10 @@ First boot opens a web wizard at `http://<host>:8080`:
 - A domain past its `monthly_send_limit` (recipients submitted on port 587 this
   calendar month, UTC) → `550 5.7.1` at submission for that domain only, and a
   `send_limit_reached` event the first time
+- Amazon SES integration on (`outbound.ses`) and the sender domain's SES
+  identity not verified yet → `451 4.7.1` at submission, so the sending server
+  keeps the message; verification failed in SES → `550 5.7.1`. Bounces are
+  written by XeronMX and handed to the relay directly, so they are not gated
 - Free space on the spool volume below `queue.min_free_disk_bytes` → alert,
   and `452 4.3.1` at `MAIL FROM`
 - Node in drain mode → `421 4.3.2`, so the sender defers or tries another MX
@@ -157,8 +161,9 @@ First boot opens a web wizard at `http://<host>:8080`:
 > and spam verdicts (v2), content filters and quarantine (v3), DKIM keys and
 > outbound routes (v4), API tokens, webhook subscriptions with their delivery
 > outbox, cluster peers and OIDC identities (v5), the `operator` role with
-> per-user `allowed_domains` (v6), and the authentication results of each
-> message and the per-domain lists of known recipients (v7). Secrets in those tables (private keys, relay passwords, signing secrets)
+> per-user `allowed_domains` (v6), the authentication results of each
+> message and the per-domain lists of known recipients (v7), and the Amazon SES
+> identity of each domain (v11). Secrets in those tables (private keys, relay passwords, signing secrets)
 > are sealed with the same
 > master key the spool uses, so reading the database alone yields nothing usable.
 
@@ -253,7 +258,7 @@ GET    /api/v1/domains                → list domains
 POST   /api/v1/domains                → add one                                  [admin]
 GET    /api/v1/domains/:id            → one domain
 PATCH  /api/v1/domains/:id            → update it                                [admin]
-DELETE /api/v1/domains/:id            → remove it                                [admin]
+DELETE /api/v1/domains/:id            → remove it (?ses_identity=delete also deletes its SES identity) [admin]
 GET    /api/v1/domains/:id/dns        → the DNS records to publish
 GET    /api/v1/domains/:id/recipients → the known recipients (empty: every address is accepted)
 PUT    /api/v1/domains/:id/recipients → replace them                             [admin]
@@ -263,6 +268,8 @@ POST   /api/v1/domains/:id/dkim       → generate one (starts disabled)        
 PATCH  /api/v1/domains/:id/dkim       → enable signing (checks DNS first unless forced), or disable it [admin]
 DELETE /api/v1/domains/:id/dkim       → delete the key                           [admin]
 GET    /api/v1/domains/:id/dkim/check → does the published record match the key (also POST)
+GET    /api/v1/domains/:id/ses        → its Amazon SES identity: status, CNAME records, whether it may be deleted
+POST   /api/v1/domains/:id/ses/check  → ask SES now, creating the identity if none covers it [operator]
 GET    /api/v1/domains/:id/dmarc      → DMARC guidance for the domain
 POST   /api/v1/domains/:id/dmarc/check → query the live record over DoH
 
@@ -284,6 +291,7 @@ POST   /api/v1/routes                 → add one                               
 PATCH  /api/v1/routes/:id             → update it                                [admin]
 DELETE /api/v1/routes/:id             → remove it                                [admin]
 GET    /api/v1/routes/test            → which path a destination would take      [fleet]
+GET    /api/v1/ses                    → Amazon SES integration: region, bounce sender coverage [fleet]
 
 # Inbound protection
 GET    /api/v1/filters                → list the content filters                 [fleet]
